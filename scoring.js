@@ -3,12 +3,10 @@
 // ═══════════════════════════════════════════════════════════════
 // SCORING ENGINE
 // Pure JS — no DOM dependencies. Loaded before app.js.
-// Phase 2 will flesh out factor definitions, thresholds, and
-// computeScores(). This stub exposes the public API shape.
 // ═══════════════════════════════════════════════════════════════
 
 // ---------------------------------------------------------------------------
-// Factor definitions (Phase 2)
+// Factor definitions
 // ---------------------------------------------------------------------------
 
 const VALUE_FACTORS = [
@@ -45,11 +43,201 @@ function getSize(marketCap) {
 }
 
 // ---------------------------------------------------------------------------
-// Main entry point (Phase 2 will complete this)
+// Scoring helpers
 // ---------------------------------------------------------------------------
 
-// computeScores(rawData, config?) → { valueScore, growthScore, netScore, style, size, factors }
-function computeScores(rawData, config = {}) {
-  // Stub: returns null until Phase 2 is implemented
-  return null;
+// Unwrap Yahoo Finance { raw, fmt } objects
+function raw(v) {
+  return v?.raw ?? v;
+}
+
+// Lower raw value → higher score (value multiples: PE, PB, etc.)
+// steps: [[upperBound, score], ...] ascending bounds, returns score for first bound exceeded
+function scoreValueFactor(val, steps) {
+  for (const [bound, score] of steps) {
+    if (val < bound) return score;
+  }
+  return steps[steps.length - 1][1];
+}
+
+// Higher raw value → higher score (growth rates, dividend yield)
+// steps: [[lowerBound, score], ...] descending bounds (highest first)
+function scoreGrowthFactor(val, steps) {
+  for (const [bound, score] of steps) {
+    if (val >= bound) return score;
+  }
+  return 5;
+}
+
+// ---------------------------------------------------------------------------
+// Factor threshold tables
+// ---------------------------------------------------------------------------
+
+const VALUE_STEPS = {
+  pe:  [[10, 95], [15, 75], [25, 50], [40, 25], [Infinity, 5]],
+  pb:  [[1, 95],  [2, 75],  [4, 50],  [7, 25],  [Infinity, 5]],
+  ps:  [[1, 95],  [2, 75],  [5, 50],  [10, 25], [Infinity, 5]],
+  pcf: [[10, 95], [15, 75], [25, 50], [40, 25], [Infinity, 5]],
+};
+
+const GROWTH_STEPS = {
+  yield:    [[0.05, 95], [0.03, 75], [0.015, 50], [0.005, 25]],
+  eps_fwd:  [[0.30, 95], [0.20, 75], [0.10, 50],  [0.05, 25]],
+  eps_hist: [[0.25, 95], [0.15, 75], [0.08, 50],  [0.03, 25]],
+  rev:      [[0.20, 95], [0.10, 75], [0.05, 50],  [0.0, 25]],
+  cf:       [[0.20, 95], [0.10, 75], [0.05, 50],  [0.0, 25]],
+  bv:       [[0.20, 95], [0.10, 75], [0.05, 50],  [0.0, 25]],
+};
+
+// ---------------------------------------------------------------------------
+// Raw value extraction helpers
+// ---------------------------------------------------------------------------
+
+function computeEpsHistGrowth(incomeQtrs) {
+  // Uses netIncome as EPS proxy (basicEPS not returned by Yahoo Finance)
+  const entries = incomeQtrs
+    .map(q => ({ val: raw(q.netIncome), date: new Date(raw(q.endDate)).getTime() }))
+    .filter(q => q.val != null && !isNaN(q.val) && q.date);
+
+  if (entries.length < 5) return null;
+
+  const newTTM = entries.slice(0, 4).reduce((s, q) => s + q.val, 0);
+  const oldTTM = entries.slice(-4).reduce((s, q) => s + q.val, 0);
+
+  if (oldTTM <= 0 || newTTM <= 0) return null;
+
+  const newMidMs = entries[1].date;
+  const oldMidMs = entries[entries.length - 3].date;
+  const years = (newMidMs - oldMidMs) / (365.25 * 24 * 3600 * 1000);
+
+  if (years < 0.5) return null;
+
+  return Math.pow(newTTM / oldTTM, 1 / years) - 1;
+}
+
+function computeYoYGrowth(statements, field) {
+  if (!statements.length) return null;
+
+  const vals = statements.map(s => raw(s[field])).filter(v => v != null && !isNaN(v));
+  if (vals.length < 2) return null;
+
+  let newSum, oldSum;
+  if (vals.length >= 8) {
+    newSum = vals.slice(0, 4).reduce((s, v) => s + v, 0);
+    oldSum = vals.slice(4, 8).reduce((s, v) => s + v, 0);
+  } else {
+    const half = Math.floor(vals.length / 2);
+    newSum = vals.slice(0, half).reduce((s, v) => s + v, 0);
+    oldSum = vals.slice(half).reduce((s, v) => s + v, 0);
+  }
+
+  if (oldSum === 0) return null;
+  return (newSum - oldSum) / Math.abs(oldSum);
+}
+
+// CF growth using netIncome as proxy when operating CF quarters aren't available
+function computeCFGrowth(cfStatements, incomeStatements) {
+  // Prefer operating CF if present, fall back to netIncome from either statement array
+  const fromCF      = computeYoYGrowth(cfStatements, 'totalCashFromOperatingActivities');
+  if (fromCF != null) return fromCF;
+  const fromCFInc   = computeYoYGrowth(cfStatements, 'netIncome');
+  if (fromCFInc != null) return fromCFInc;
+  return computeYoYGrowth(incomeStatements, 'netIncome');
+}
+
+function extractRawValues(data) {
+  const price = data.price || {};
+  const fd    = data.financialData || {};
+  const ks    = data.defaultKeyStatistics || {};
+  const et    = data.earningsTrend || {};
+  const iqbs  = data.balanceSheetHistoryQuarterly || {};
+  const iqcf  = data.cashflowStatementHistoryQuarterly || {};
+  const iqis  = data.incomeStatementHistoryQuarterly || {};
+
+  const mktCap   = raw(price.marketCap);
+  const curPrice = raw(price.regularMarketPrice);
+
+  // P/E: use trailingPE if present, derive from price/trailingEps otherwise
+  const trailingEps = raw(ks.trailingEps);
+  const pe = raw(ks.trailingPE) ?? (curPrice && trailingEps ? curPrice / trailingEps : null);
+
+  // P/S: use stored value if present, derive from marketCap/totalRevenue otherwise
+  const totalRevenue = raw(fd.totalRevenue);
+  const ps = raw(ks.priceToSalesTrailing12Months) ?? (mktCap && totalRevenue ? mktCap / totalRevenue : null);
+
+  // P/CF: prefer operatingCashflow (more reliable than freeCashflow for this ratio)
+  const opCF = raw(fd.operatingCashflow) || raw(fd.freeCashflow);
+  const pcf  = mktCap && opCF ? mktCap / opCF : null;
+
+  // Dividend yield: use financialData field if present, derive from lastDividendValue otherwise
+  const storedYield = raw(fd.dividendYield);
+  const lastDiv     = raw(ks.lastDividendValue);
+  const yieldVal    = storedYield ?? (lastDiv && curPrice ? (lastDiv * 4) / curPrice : null);
+
+  // EPS forward growth: prefer +1y period entry, fall back to trend[0]
+  let epsFwdRaw = null;
+  const trend = et.trend;
+  if (Array.isArray(trend) && trend.length > 0) {
+    const fwdEntry = trend.find(t => t.period === '+1y') || trend[0];
+    epsFwdRaw = raw(fwdEntry?.earningsEstimate?.growth);
+  }
+
+  const cfStatements     = iqcf.cashflowStatements || [];
+  const incomeStatements = iqis.incomeStatementHistory || [];
+
+  return {
+    pe,
+    pb:       raw(ks.priceToBook),
+    ps,
+    pcf,
+    yield:    yieldVal,
+    eps_fwd:  epsFwdRaw,
+    eps_hist: computeEpsHistGrowth(incomeStatements),
+    rev:      raw(fd.revenueGrowth),
+    cf:       computeCFGrowth(cfStatements, incomeStatements),
+    bv:       computeYoYGrowth(iqbs.balanceSheetStatements || [], 'totalStockholderEquity'),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Main entry point
+// ---------------------------------------------------------------------------
+
+function computeScores(data, config = {}) {
+  const rawVals = extractRawValues(data);
+  const mktCap  = raw((data.price || {}).marketCap);
+
+  const factors = {};
+
+  for (const { key, label } of VALUE_FACTORS) {
+    const r = rawVals[key];
+    if (r == null || isNaN(r)) { factors[key] = { raw: null, score: null, label }; continue; }
+    const score = key === 'yield'
+      ? scoreGrowthFactor(r, GROWTH_STEPS.yield)
+      : scoreValueFactor(r, VALUE_STEPS[key]);
+    factors[key] = { raw: r, score, label };
+  }
+
+  for (const { key, label } of GROWTH_FACTORS) {
+    const r = rawVals[key];
+    if (r == null || isNaN(r)) { factors[key] = { raw: null, score: null, label }; continue; }
+    factors[key] = { raw: r, score: scoreGrowthFactor(r, GROWTH_STEPS[key]), label };
+  }
+
+  function avgValid(keys) {
+    const scores = keys.map(k => factors[k].score).filter(s => s != null);
+    return scores.length ? scores.reduce((a, b) => a + b, 0) / scores.length : null;
+  }
+
+  const valueScore  = avgValid(VALUE_FACTORS.map(f => f.key));
+  const growthScore = avgValid(GROWTH_FACTORS.map(f => f.key));
+
+  if (valueScore == null || growthScore == null) {
+    return { valueScore, growthScore, netScore: null, style: 'Unknown', size: getSize(mktCap), factors };
+  }
+
+  const netScore = growthScore - valueScore;
+  const style    = netScore > 15 ? 'Growth' : netScore < -15 ? 'Value' : 'Blend';
+
+  return { valueScore, growthScore, netScore, style, size: getSize(mktCap), factors };
 }

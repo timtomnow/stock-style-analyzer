@@ -282,7 +282,7 @@ function renderDashboard() {
         </div>
         <div class="stat-card">
           <div class="stat-label">Status</div>
-          <div class="stat-value" style="font-size:15px;color:var(--success)">Phase 1</div>
+          <div class="stat-value" style="font-size:15px;color:var(--success)">Phase 2</div>
         </div>
       </div>
 
@@ -297,7 +297,7 @@ function renderDashboard() {
           <div class="step-card">
             <div class="step-num">2</div>
             <div class="step-label">Score Value &amp; Growth</div>
-            <div class="step-body">10 fundamental factors are scored on a 0–100 scale (Phase 2).</div>
+            <div class="step-body">10 fundamental factors are scored on a 0–100 scale (Value &amp; Growth).</div>
           </div>
           <div class="step-card">
             <div class="step-num">3</div>
@@ -413,6 +413,85 @@ function lookupTicker(ticker) {
   }, 0);
 }
 
+function renderScores(scores) {
+  if (!scores) {
+    return `<p style="color:var(--muted);font-size:13px;padding:8px 0">Could not compute scores — data unavailable.</p>`;
+  }
+
+  const { valueScore, growthScore, netScore, style, size, factors } = scores;
+
+  const valueCount  = VALUE_FACTORS.filter(f => factors[f.key].score != null).length;
+  const growthCount = GROWTH_FACTORS.filter(f => factors[f.key].score != null).length;
+
+  const warning = (valueCount < 3 || growthCount < 3)
+    ? `<div class="score-warning">Warning: limited data (${valueCount}/5 value, ${growthCount}/5 growth factors) — scores may not be reliable.</div>`
+    : '';
+
+  const fmtFactor = (key, rawVal) => {
+    if (rawVal == null) return '—';
+    return ['yield', 'eps_fwd', 'eps_hist', 'rev', 'cf', 'bv'].includes(key)
+      ? fmtPct(rawVal)
+      : fmtNum(rawVal);
+  };
+
+  const STYLE_CSS = { Value: 'var(--warning)', Blend: 'var(--accent)', Growth: 'var(--success)', Unknown: 'var(--muted)' };
+  const styleColor = STYLE_CSS[style] || 'var(--muted)';
+  const netLabel   = netScore != null ? (netScore >= 0 ? `+${Math.round(netScore)}` : `${Math.round(netScore)}`) : '—';
+  const sizeLabel  = { large: 'Large', mid: 'Mid', small: 'Small' }[size] || '—';
+
+  const allFactors = [...VALUE_FACTORS, ...GROWTH_FACTORS];
+
+  return `
+    ${warning}
+    <div class="score-grid">
+      <div class="score-card">
+        <div class="score-card-label">Value Score</div>
+        <div class="score-card-value">${valueScore != null ? Math.round(valueScore) : '—'}</div>
+        ${valueScore != null ? `<div class="score-bar"><div class="score-bar-fill score-bar-value" style="width:${valueScore}%"></div></div>` : ''}
+        <div class="score-card-hint">${valueCount}/5 factors</div>
+      </div>
+      <div class="score-card">
+        <div class="score-card-label">Growth Score</div>
+        <div class="score-card-value">${growthScore != null ? Math.round(growthScore) : '—'}</div>
+        ${growthScore != null ? `<div class="score-bar"><div class="score-bar-fill score-bar-growth" style="width:${growthScore}%"></div></div>` : ''}
+        <div class="score-card-hint">${growthCount}/5 factors</div>
+      </div>
+      <div class="score-card">
+        <div class="score-card-label">Style</div>
+        <div class="score-card-value" style="color:${styleColor}">${esc(style)}</div>
+        <div class="score-card-hint">${esc(sizeLabel)}-cap · Net ${esc(netLabel)}</div>
+      </div>
+    </div>
+
+    <div class="card-title" style="margin-top:18px">Factor Breakdown</div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr>
+          <th>Factor</th><th>Type</th>
+          <th class="text-right">Raw Value</th>
+          <th class="text-right">Score</th>
+        </tr></thead>
+        <tbody>
+          ${allFactors.map(({ key, label }) => {
+            const f = factors[key];
+            const isValue  = VALUE_FACTORS.some(v => v.key === key);
+            const typeLabel = isValue ? 'Value' : 'Growth';
+            const scoreDisp = f.score != null ? Math.round(f.score) : 'N/A';
+            const scoreClass = f.score != null
+              ? (f.score >= 65 ? 'text-positive' : f.score <= 35 ? 'text-negative' : '')
+              : 'text-muted';
+            return `<tr>
+              <td>${esc(label)}</td>
+              <td class="text-muted" style="font-size:12px">${esc(typeLabel)}</td>
+              <td class="text-right font-mono">${esc(fmtFactor(key, f.raw))}</td>
+              <td class="text-right font-mono ${scoreClass}">${esc(String(scoreDisp))}</td>
+            </tr>`;
+          }).join('')}
+        </tbody>
+      </table>
+    </div>`;
+}
+
 function renderQuoteResult(q) {
   const d = q.data;
   const price = d.price || {};
@@ -470,11 +549,8 @@ function renderQuoteResult(q) {
         </table>
       </div>
 
-      <div class="card-title" style="margin-top:20px">Scoring (Phase 2)</div>
-      <div style="color:var(--muted);font-size:13px;padding:12px 0">
-        Value Score and Growth Score will be computed here in Phase 2.
-        Style box visualization will follow in Phase 3.
-      </div>
+      <div class="card-title" style="margin-top:20px">Style Scores</div>
+      ${renderScores(computeScores(q.data))}
     </div>
 
     <div class="card" style="margin-top:16px">
