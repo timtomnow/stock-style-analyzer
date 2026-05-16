@@ -21,6 +21,8 @@ const state = {
 
 // In-memory only: last fetched quote result (not persisted)
 let currentQuote = null;
+// In-memory only: 0 = TTM, N = shift YoY window N quarters into the past
+let currentPeriod = 0;
 
 // ═══════════════════════════════════════════════════════════════
 // DATA SCHEMAS & DEFAULTS
@@ -407,6 +409,7 @@ async function fetchTicker() {
     const json = await res.json();
     if (!json.ok) throw new Error(json.error || 'Unknown error');
     currentQuote = { ticker: json.ticker, data: json.data, fetchedAt: new Date().toISOString() };
+    currentPeriod = 0;
     resultEl.innerHTML = renderQuoteResult(currentQuote);
   } catch (err) {
     currentQuote = null;
@@ -416,6 +419,28 @@ async function fetchTicker() {
     btn.disabled = false;
     btn.textContent = 'Fetch';
   }
+}
+
+function buildPeriodOptions(data) {
+  const opts = [{ offset: 0, label: 'TTM (current)' }];
+  const qtrs = data?.incomeStatementHistoryQuarterly?.incomeStatementHistory || [];
+  for (let i = 1; i < Math.min(qtrs.length, 5); i++) {
+    const endDate = qtrs[i].endDate?.raw ?? qtrs[i].endDate;
+    if (!endDate) continue;
+    // Only offer offsets where at least 2 growth factors can be computed
+    const probe = computeScores(data, state.data.settings.scoringConfig, { periodOffset: i });
+    const growthCount = GROWTH_FACTORS.filter(f => probe.factors[f.key].score != null).length;
+    if (growthCount < 2) continue;
+    const d = new Date(endDate);
+    const q = Math.floor(d.getMonth() / 3) + 1;
+    opts.push({ offset: i, label: `Q${q} ${d.getFullYear()}` });
+  }
+  return opts;
+}
+
+function setPeriod(offset) {
+  currentPeriod = parseInt(offset, 10) || 0;
+  document.getElementById('lookup-result').innerHTML = renderQuoteResult(currentQuote);
 }
 
 // Called from dashboard watchlist to jump to lookup with a pre-loaded ticker
@@ -623,6 +648,11 @@ function renderQuoteResult(q) {
   ];
 
   const inWatchlist = state.data.stocks.some(s => s.ticker === q.ticker);
+  const periodOpts  = buildPeriodOptions(d);
+  const selectedOpt = periodOpts.find(o => o.offset === currentPeriod) || periodOpts[0];
+  // If the previously-selected offset is no longer in the list (e.g. after a re-fetch),
+  // snap back to TTM.
+  if (selectedOpt.offset !== currentPeriod) currentPeriod = selectedOpt.offset;
 
   return `
     <div class="card" style="margin-top:16px">
@@ -635,6 +665,15 @@ function renderQuoteResult(q) {
         ${inWatchlist
           ? `<button class="btn btn-secondary" onclick="removeFromWatchlist('${esc(q.ticker)}')">Remove from Watchlist</button>`
           : `<button class="btn btn-primary" onclick="addToWatchlist()">+ Add to Watchlist</button>`}
+      </div>
+
+      <div class="period-selector">
+        <label for="period-select">Analyze as of</label>
+        <select id="period-select" onchange="setPeriod(this.value)">
+          ${periodOpts.map(o =>
+            `<option value="${o.offset}"${o.offset === currentPeriod ? ' selected' : ''}>${esc(o.label)}</option>`
+          ).join('')}
+        </select>
       </div>
 
       <div class="card-title">Key Fundamentals</div>
@@ -653,11 +692,22 @@ function renderQuoteResult(q) {
 
       <div class="card-title" style="margin-top:20px;display:flex;align-items:center;gap:8px;flex-wrap:wrap">
         <span>Style Scores</span>
+        ${currentPeriod > 0 ? `<span class="badge neutral">${esc(selectedOpt.label)}</span>` : ''}
         ${!isDefaultScoringConfig(state.data.settings.scoringConfig)
           ? `<span class="badge" style="cursor:pointer" onclick="navigate('settings')" title="Click to edit weights">Custom weights active</span>`
           : ''}
       </div>
-      ${renderScores(computeScores(q.data, state.data.settings.scoringConfig), q.ticker)}
+      ${currentPeriod > 0 ? `
+        <div class="score-warning">
+          Showing growth factors as of <strong>${esc(selectedOpt.label)}</strong>.
+          Valuation ratios (P/E, P/B, P/S, P/CF, Div. Yield, EPS Fwd) reflect the
+          current snapshot only — Yahoo Finance does not return historical multiples,
+          so they are shown as N/A and excluded from scoring.
+        </div>` : ''}
+      ${renderScores(
+        computeScores(q.data, state.data.settings.scoringConfig, { periodOffset: currentPeriod }),
+        q.ticker
+      )}
     </div>
 
     <div class="card" style="margin-top:16px">

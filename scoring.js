@@ -115,14 +115,19 @@ function computeEpsHistGrowth(incomeQtrs) {
   return Math.pow(newTTM / oldTTM, 1 / years) - 1;
 }
 
-function computeYoYGrowth(statements, field) {
+function computeYoYGrowth(statements, field, periodOffset = 0) {
   if (!statements.length) return null;
 
   const vals = statements.map(s => raw(s[field])).filter(v => v != null && !isNaN(v));
   if (vals.length < 2) return null;
 
   let newSum, oldSum;
-  if (vals.length >= 8) {
+  if (periodOffset > 0) {
+    // Shifted window: require full 8 quarters past the offset, no half-split fallback
+    if (vals.length < periodOffset + 8) return null;
+    newSum = vals.slice(periodOffset,     periodOffset + 4).reduce((s, v) => s + v, 0);
+    oldSum = vals.slice(periodOffset + 4, periodOffset + 8).reduce((s, v) => s + v, 0);
+  } else if (vals.length >= 8) {
     newSum = vals.slice(0, 4).reduce((s, v) => s + v, 0);
     oldSum = vals.slice(4, 8).reduce((s, v) => s + v, 0);
   } else {
@@ -136,16 +141,22 @@ function computeYoYGrowth(statements, field) {
 }
 
 // CF growth using netIncome as proxy when operating CF quarters aren't available
-function computeCFGrowth(cfStatements, incomeStatements) {
-  // Prefer operating CF if present, fall back to netIncome from either statement array
-  const fromCF      = computeYoYGrowth(cfStatements, 'totalCashFromOperatingActivities');
+function computeCFGrowth(cfStatements, incomeStatements, periodOffset = 0) {
+  const fromCF    = computeYoYGrowth(cfStatements,     'totalCashFromOperatingActivities', periodOffset);
   if (fromCF != null) return fromCF;
-  const fromCFInc   = computeYoYGrowth(cfStatements, 'netIncome');
+  const fromCFInc = computeYoYGrowth(cfStatements,     'netIncome', periodOffset);
   if (fromCFInc != null) return fromCFInc;
-  return computeYoYGrowth(incomeStatements, 'netIncome');
+  return computeYoYGrowth(incomeStatements, 'netIncome', periodOffset);
 }
 
-function extractRawValues(data) {
+// options.periodOffset: 0 = TTM (current), N = shift the YoY-growth window
+// back by N quarters. For periodOffset > 0 the point-in-time ratios
+// (P/E, P/B, P/S, P/CF, dividend yield, EPS-fwd) are returned as null —
+// Yahoo Finance only gives us a current snapshot of these. eps_hist
+// uses the full history regardless of periodOffset (it's a 3-yr CAGR).
+function extractRawValues(data, options = {}) {
+  const periodOffset = options.periodOffset || 0;
+  const isCurrent    = periodOffset === 0;
   const price = data.price || {};
   const fd    = data.financialData || {};
   const ks    = data.defaultKeyStatistics || {};
@@ -186,16 +197,18 @@ function extractRawValues(data) {
   const incomeStatements = iqis.incomeStatementHistory || [];
 
   return {
-    pe,
-    pb:       raw(ks.priceToBook),
-    ps,
-    pcf,
-    yield:    yieldVal,
-    eps_fwd:  epsFwdRaw,
+    pe:       isCurrent ? pe                 : null,
+    pb:       isCurrent ? raw(ks.priceToBook) : null,
+    ps:       isCurrent ? ps                  : null,
+    pcf:      isCurrent ? pcf                 : null,
+    yield:    isCurrent ? yieldVal            : null,
+    eps_fwd:  isCurrent ? epsFwdRaw           : null,
     eps_hist: computeEpsHistGrowth(incomeStatements),
-    rev:      raw(fd.revenueGrowth),
-    cf:       computeCFGrowth(cfStatements, incomeStatements),
-    bv:       computeYoYGrowth(iqbs.balanceSheetStatements || [], 'totalStockholderEquity'),
+    rev:      isCurrent
+              ? raw(fd.revenueGrowth)
+              : computeYoYGrowth(incomeStatements, 'totalRevenue', periodOffset),
+    cf:       computeCFGrowth(cfStatements, incomeStatements, periodOffset),
+    bv:       computeYoYGrowth(iqbs.balanceSheetStatements || [], 'totalStockholderEquity', periodOffset),
   };
 }
 
@@ -224,8 +237,8 @@ function isDefaultScoringConfig(config) {
   return true;
 }
 
-function computeScores(data, config = {}) {
-  const rawVals = extractRawValues(data);
+function computeScores(data, config = {}, options = {}) {
+  const rawVals = extractRawValues(data, options);
   const mktCap  = raw((data.price || {}).marketCap);
 
   const weights = config.weights || {};
