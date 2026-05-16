@@ -413,7 +413,86 @@ function lookupTicker(ticker) {
   }, 0);
 }
 
-function renderScores(scores) {
+function renderStyleBox(scores, ticker) {
+  const W = 240, H = 240;
+  const cellW = W / 3, cellH = H / 3;
+
+  const COLUMNS = [
+    { name: 'Value',  bg: '#fdf6e3' },
+    { name: 'Blend',  bg: '#fafafa' },
+    { name: 'Growth', bg: '#f0fdf4' },
+  ];
+  const ROWS = ['Large', 'Mid', 'Small'];
+
+  const cellRects = [];
+  const cellLabels = [];
+  for (let r = 0; r < 3; r++) {
+    for (let c = 0; c < 3; c++) {
+      cellRects.push(`<rect x="${c * cellW}" y="${r * cellH}" width="${cellW}" height="${cellH}" fill="${COLUMNS[c].bg}"/>`);
+      const cx = c * cellW + cellW / 2;
+      const cy = r * cellH + cellH / 2;
+      cellLabels.push(
+        `<text x="${cx}" y="${cy - 3}" text-anchor="middle" font-size="11" fill="#a1a1aa">${ROWS[r]}</text>` +
+        `<text x="${cx}" y="${cy + 11}" text-anchor="middle" font-size="11" fill="#a1a1aa">${COLUMNS[c].name}</text>`
+      );
+    }
+  }
+
+  const gridLines = [];
+  for (let i = 0; i <= 3; i++) {
+    gridLines.push(`<line x1="${i * cellW}" y1="0" x2="${i * cellW}" y2="${H}" stroke="#d4d4d8" stroke-width="1"/>`);
+    gridLines.push(`<line x1="0" y1="${i * cellH}" x2="${W}" y2="${i * cellH}" stroke="#d4d4d8" stroke-width="1"/>`);
+  }
+
+  const svgOpen = `<svg viewBox="0 0 ${W} ${H}" width="100%" style="max-width:${W}px;display:block;margin:0 auto;font-family:var(--font)"`;
+
+  if (!scores || scores.netScore == null) {
+    return `
+      <div class="style-box-wrap">
+        ${svgOpen} role="img" aria-label="Style box — insufficient data">
+          <g opacity="0.45">
+            ${cellRects.join('')}
+            ${gridLines.join('')}
+            ${cellLabels.join('')}
+          </g>
+          <rect x="20" y="${H / 2 - 16}" width="${W - 40}" height="32" fill="#ffffff" stroke="#d4d4d8" stroke-width="1" rx="4"/>
+          <text x="${W / 2}" y="${H / 2 + 4}" text-anchor="middle" font-size="12" fill="#71717a" font-weight="600">Insufficient data</text>
+        </svg>
+      </div>`;
+  }
+
+  const { netScore, size, style } = scores;
+  const R = 10;
+  const xRaw = ((netScore + 100) / 200) * W;
+  const x = Math.max(R + 2, Math.min(W - R - 2, xRaw));
+  const y = size === 'large' ? cellH * 0.5
+          : size === 'small' ? cellH * 2.5
+          : cellH * 1.5;
+
+  const DOT_COLORS = { Value: '#ca8a04', Blend: '#2563eb', Growth: '#16a34a' };
+  const dotColor = DOT_COLORS[style] || '#71717a';
+
+  const labelOnRight = x < W - 50;
+  const labelX = labelOnRight ? x + R + 5 : x - R - 5;
+  const labelAnchor = labelOnRight ? 'start' : 'end';
+
+  const tip = `${ticker} — ${size}-cap ${style} (net ${netScore >= 0 ? '+' : ''}${Math.round(netScore)})`;
+
+  return `
+    <div class="style-box-wrap">
+      ${svgOpen} role="img" aria-label="Style box for ${esc(ticker)}: ${esc(size)}-cap ${esc(style)}">
+        ${cellRects.join('')}
+        ${gridLines.join('')}
+        ${cellLabels.join('')}
+        <circle cx="${x}" cy="${y}" r="${R}" fill="${dotColor}" stroke="#ffffff" stroke-width="2.5">
+          <title>${esc(tip)}</title>
+        </circle>
+        <text x="${labelX}" y="${y + 4}" text-anchor="${labelAnchor}" font-size="11" font-weight="700" fill="#18181b" style="paint-order:stroke;stroke:#ffffff;stroke-width:3px;stroke-linejoin:round">${esc(ticker)}</text>
+      </svg>
+    </div>`;
+}
+
+function renderScores(scores, ticker) {
   if (!scores) {
     return `<p style="color:var(--muted);font-size:13px;padding:8px 0">Could not compute scores — data unavailable.</p>`;
   }
@@ -443,6 +522,7 @@ function renderScores(scores) {
 
   return `
     ${warning}
+    ${renderStyleBox(scores, ticker)}
     <div class="score-grid">
       <div class="score-card">
         <div class="score-card-label">Value Score</div>
@@ -550,7 +630,7 @@ function renderQuoteResult(q) {
       </div>
 
       <div class="card-title" style="margin-top:20px">Style Scores</div>
-      ${renderScores(computeScores(q.data))}
+      ${renderScores(computeScores(q.data), q.ticker)}
     </div>
 
     <div class="card" style="margin-top:16px">

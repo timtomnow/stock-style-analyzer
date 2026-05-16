@@ -513,6 +513,13 @@ textarea { resize: vertical; min-height: 72px; }
   color: var(--muted);
 }
 
+.style-box-wrap {
+  display: flex;
+  justify-content: center;
+  margin: 4px 0 18px;
+  padding: 4px;
+}
+
 .score-warning {
   background: #fefce8;
   border: 1px solid #fde047;
