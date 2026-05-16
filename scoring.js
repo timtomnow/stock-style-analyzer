@@ -203,34 +203,68 @@ function extractRawValues(data) {
 // Main entry point
 // ---------------------------------------------------------------------------
 
+function defaultScoringConfig() {
+  const weights = {}, enabled = {};
+  for (const { key } of [...VALUE_FACTORS, ...GROWTH_FACTORS]) {
+    weights[key] = 1;
+    enabled[key] = true;
+  }
+  return { weights, enabled };
+}
+
+function isDefaultScoringConfig(config) {
+  if (!config) return true;
+  const allKeys = [...VALUE_FACTORS, ...GROWTH_FACTORS].map(f => f.key);
+  for (const k of allKeys) {
+    const w = config.weights?.[k];
+    const e = config.enabled?.[k];
+    if (w != null && w !== 1) return false;
+    if (e === false) return false;
+  }
+  return true;
+}
+
 function computeScores(data, config = {}) {
   const rawVals = extractRawValues(data);
   const mktCap  = raw((data.price || {}).marketCap);
+
+  const weights = config.weights || {};
+  const enabled = config.enabled || {};
+  const wOf = k => weights[k] != null ? weights[k] : 1;
+  const eOf = k => enabled[k] !== false;
 
   const factors = {};
 
   for (const { key, label } of VALUE_FACTORS) {
     const r = rawVals[key];
-    if (r == null || isNaN(r)) { factors[key] = { raw: null, score: null, label }; continue; }
+    const w = wOf(key), en = eOf(key);
+    if (r == null || isNaN(r)) { factors[key] = { raw: null, score: null, label, weight: w, enabled: en }; continue; }
     const score = key === 'yield'
       ? scoreGrowthFactor(r, GROWTH_STEPS.yield)
       : scoreValueFactor(r, VALUE_STEPS[key]);
-    factors[key] = { raw: r, score, label };
+    factors[key] = { raw: r, score, label, weight: w, enabled: en };
   }
 
   for (const { key, label } of GROWTH_FACTORS) {
     const r = rawVals[key];
-    if (r == null || isNaN(r)) { factors[key] = { raw: null, score: null, label }; continue; }
-    factors[key] = { raw: r, score: scoreGrowthFactor(r, GROWTH_STEPS[key]), label };
+    const w = wOf(key), en = eOf(key);
+    if (r == null || isNaN(r)) { factors[key] = { raw: null, score: null, label, weight: w, enabled: en }; continue; }
+    factors[key] = { raw: r, score: scoreGrowthFactor(r, GROWTH_STEPS[key]), label, weight: w, enabled: en };
   }
 
-  function avgValid(keys) {
-    const scores = keys.map(k => factors[k].score).filter(s => s != null);
-    return scores.length ? scores.reduce((a, b) => a + b, 0) / scores.length : null;
+  function weightedAvg(keys) {
+    let weightedSum = 0, weightTotal = 0;
+    for (const k of keys) {
+      const f = factors[k];
+      if (f.score == null || !f.enabled || f.weight <= 0) continue;
+      weightedSum += f.score * f.weight;
+      weightTotal += f.weight;
+    }
+    return weightTotal > 0 ? weightedSum / weightTotal : null;
   }
 
-  const valueScore  = avgValid(VALUE_FACTORS.map(f => f.key));
-  const growthScore = avgValid(GROWTH_FACTORS.map(f => f.key));
+  const valueScore  = weightedAvg(VALUE_FACTORS.map(f => f.key));
+  const growthScore = weightedAvg(GROWTH_FACTORS.map(f => f.key));
 
   if (valueScore == null || growthScore == null) {
     return { valueScore, growthScore, netScore: null, style: 'Unknown', size: getSize(mktCap), factors };

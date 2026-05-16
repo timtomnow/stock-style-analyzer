@@ -30,7 +30,10 @@ function defaultData() {
   return {
     version: 1,
     stocks: [],   // saved/watchlisted stocks
-    settings: { appName: 'Stock Style Analyzer' },
+    settings: {
+      appName: 'Stock Style Analyzer',
+      scoringConfig: defaultScoringConfig(),
+    },
   };
 }
 
@@ -44,6 +47,18 @@ function loadData() {
     state.data = raw ? JSON.parse(raw) : defaultData();
     // migrate: ensure stocks array exists
     if (!state.data.stocks) state.data.stocks = [];
+    // migrate: ensure scoringConfig exists, and fill in any missing factor keys
+    if (!state.data.settings) state.data.settings = {};
+    const defaultCfg = defaultScoringConfig();
+    const cfg = state.data.settings.scoringConfig;
+    if (!cfg || !cfg.weights || !cfg.enabled) {
+      state.data.settings.scoringConfig = defaultCfg;
+    } else {
+      for (const k of Object.keys(defaultCfg.weights)) {
+        if (cfg.weights[k] == null) cfg.weights[k] = defaultCfg.weights[k];
+        if (cfg.enabled[k] == null) cfg.enabled[k] = defaultCfg.enabled[k];
+      }
+    }
   } catch (e) {
     state.data = defaultData();
   }
@@ -549,6 +564,7 @@ function renderScores(scores, ticker) {
         <thead><tr>
           <th>Factor</th><th>Type</th>
           <th class="text-right">Raw Value</th>
+          <th class="text-right">Weight</th>
           <th class="text-right">Score</th>
         </tr></thead>
         <tbody>
@@ -556,14 +572,20 @@ function renderScores(scores, ticker) {
             const f = factors[key];
             const isValue  = VALUE_FACTORS.some(v => v.key === key);
             const typeLabel = isValue ? 'Value' : 'Growth';
-            const scoreDisp = f.score != null ? Math.round(f.score) : 'N/A';
-            const scoreClass = f.score != null
-              ? (f.score >= 65 ? 'text-positive' : f.score <= 35 ? 'text-negative' : '')
-              : 'text-muted';
-            return `<tr>
+            const disabled  = f.enabled === false || f.weight === 0;
+            const scoreDisp = disabled ? 'off' : (f.score != null ? Math.round(f.score) : 'N/A');
+            const scoreClass = disabled
+              ? 'text-muted'
+              : f.score != null
+                ? (f.score >= 65 ? 'text-positive' : f.score <= 35 ? 'text-negative' : '')
+                : 'text-muted';
+            const rowStyle = disabled ? 'opacity:0.45' : '';
+            const weightDisp = f.weight != null ? fmtNum(f.weight, f.weight % 1 === 0 ? 0 : 2) : '—';
+            return `<tr style="${rowStyle}">
               <td>${esc(label)}</td>
               <td class="text-muted" style="font-size:12px">${esc(typeLabel)}</td>
               <td class="text-right font-mono">${esc(fmtFactor(key, f.raw))}</td>
+              <td class="text-right font-mono text-muted">${esc(weightDisp)}×</td>
               <td class="text-right font-mono ${scoreClass}">${esc(String(scoreDisp))}</td>
             </tr>`;
           }).join('')}
@@ -629,8 +651,13 @@ function renderQuoteResult(q) {
         </table>
       </div>
 
-      <div class="card-title" style="margin-top:20px">Style Scores</div>
-      ${renderScores(computeScores(q.data), q.ticker)}
+      <div class="card-title" style="margin-top:20px;display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+        <span>Style Scores</span>
+        ${!isDefaultScoringConfig(state.data.settings.scoringConfig)
+          ? `<span class="badge" style="cursor:pointer" onclick="navigate('settings')" title="Click to edit weights">Custom weights active</span>`
+          : ''}
+      </div>
+      ${renderScores(computeScores(q.data, state.data.settings.scoringConfig), q.ticker)}
     </div>
 
     <div class="card" style="margin-top:16px">
@@ -722,6 +749,29 @@ function renderWatchlist() {
 
 function renderSettings() {
   const { settings } = state.data;
+  const cfg = settings.scoringConfig;
+  const isCustom = !isDefaultScoringConfig(cfg);
+
+  const factorRow = ({ key, label }, type) => {
+    const w = cfg.weights[key];
+    const en = cfg.enabled[key];
+    return `
+      <div class="weight-row ${en ? '' : 'weight-row-off'}">
+        <label class="weight-toggle">
+          <input type="checkbox" ${en ? 'checked' : ''} onchange="toggleFactor('${key}', this.checked)">
+        </label>
+        <div class="weight-meta">
+          <div class="weight-label">${esc(label)}</div>
+          <div class="weight-type">${type}</div>
+        </div>
+        <input type="range" min="0" max="3" step="0.25" value="${w}"
+          ${en ? '' : 'disabled'}
+          class="weight-slider"
+          oninput="setFactorWeight('${key}', this.value)">
+        <div class="weight-value font-mono" id="weight-readout-${key}">${fmtNum(w, w % 1 === 0 ? 0 : 2)}×</div>
+      </div>`;
+  };
+
   return `
     <div class="page">
       <div class="page-header">
@@ -732,6 +782,27 @@ function renderSettings() {
       </div>
 
       <div class="card">
+        <div class="card-title" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+          <span>Scoring Weights</span>
+          ${isCustom ? `<span class="badge">Custom</span>` : `<span class="badge neutral">Defaults</span>`}
+        </div>
+        <div class="form-hint" style="margin-bottom:14px">
+          Each factor contributes weight × score to its Value or Growth average.
+          Set weight to 0 or uncheck to exclude a factor.
+        </div>
+
+        <div class="weight-section-label">Value Factors</div>
+        ${VALUE_FACTORS.map(f => factorRow(f, 'Value')).join('')}
+
+        <div class="weight-section-label" style="margin-top:14px">Growth Factors</div>
+        ${GROWTH_FACTORS.map(f => factorRow(f, 'Growth')).join('')}
+
+        <div style="margin-top:16px">
+          <button class="btn btn-secondary" onclick="resetScoringConfig()">Reset to Defaults</button>
+        </div>
+      </div>
+
+      <div class="card mt-4">
         <div class="card-title">General</div>
         <div class="form-group">
           <label>App Name</label>
@@ -750,6 +821,27 @@ function renderSettings() {
         <div class="form-hint mt-2">Export regularly as a backup. Importing replaces all current data.</div>
       </div>
     </div>`;
+}
+
+function setFactorWeight(key, val) {
+  const w = parseFloat(val);
+  state.data.settings.scoringConfig.weights[key] = w;
+  saveData();
+  const readout = document.getElementById(`weight-readout-${key}`);
+  if (readout) readout.textContent = `${fmtNum(w, w % 1 === 0 ? 0 : 2)}×`;
+}
+
+function toggleFactor(key, on) {
+  state.data.settings.scoringConfig.enabled[key] = on;
+  saveData();
+  navigate('settings');
+}
+
+function resetScoringConfig() {
+  state.data.settings.scoringConfig = defaultScoringConfig();
+  saveData();
+  navigate('settings');
+  showToast('Scoring weights reset to defaults', 'success');
 }
 
 function saveSettingAppName(val) {
