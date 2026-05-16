@@ -9,6 +9,16 @@ const STORAGE_KEY = 'stock_analyzer_v1';
 // Maps sub-pages to their parent sidebar page for active highlighting
 const SIDEBAR_MAP = {};
 
+// Palette for multi-stock dots on the style box (cycles if > 8 stocks).
+const STOCK_COLORS = [
+  '#2563eb', '#16a34a', '#ca8a04', '#dc2626',
+  '#7c3aed', '#0891b2', '#ea580c', '#db2777',
+];
+
+const SNAPSHOT_STALE_MS = 7 * 24 * 3600 * 1000;
+
+function colorForIndex(i) { return STOCK_COLORS[i % STOCK_COLORS.length]; }
+
 // ═══════════════════════════════════════════════════════════════
 // STATE
 // ═══════════════════════════════════════════════════════════════
@@ -23,6 +33,8 @@ const state = {
 let currentQuote = null;
 // In-memory only: 0 = TTM, N = shift YoY window N quarters into the past
 let currentPeriod = 0;
+// In-memory only: watchlist sort state (not persisted)
+let watchlistSort = { col: 'net', dir: 'desc' };
 
 // ═══════════════════════════════════════════════════════════════
 // DATA SCHEMAS & DEFAULTS
@@ -49,6 +61,10 @@ function loadData() {
     state.data = raw ? JSON.parse(raw) : defaultData();
     // migrate: ensure stocks array exists
     if (!state.data.stocks) state.data.stocks = [];
+    // migrate: ensure every stock has a snapshot field (pre-Phase 6 entries have none)
+    for (const s of state.data.stocks) {
+      if (!('snapshot' in s)) s.snapshot = null;
+    }
     // migrate: ensure scoringConfig exists, and fill in any missing factor keys
     if (!state.data.settings) state.data.settings = {};
     const defaultCfg = defaultScoringConfig();
@@ -151,6 +167,64 @@ function fmtMktCap(n) {
   if (n >= 1e9)  return '$' + (n / 1e9).toFixed(2) + 'B';
   if (n >= 1e6)  return '$' + (n / 1e6).toFixed(2) + 'M';
   return '$' + n.toLocaleString();
+}
+
+// ═══════════════════════════════════════════════════════════════
+// WATCHLIST SNAPSHOTS
+// ═══════════════════════════════════════════════════════════════
+
+function periodLabelFor(data, periodOffset) {
+  if (!periodOffset) return 'TTM';
+  const qtrs = data?.incomeStatementHistoryQuarterly?.incomeStatementHistory || [];
+  const endDate = qtrs[periodOffset]?.endDate?.raw ?? qtrs[periodOffset]?.endDate;
+  if (!endDate) return `Q-${periodOffset}`;
+  const d = new Date(endDate);
+  return `Q${Math.floor(d.getMonth() / 3) + 1} ${d.getFullYear()}`;
+}
+
+function makeSnapshot(scores, periodOffset, cfg, data) {
+  return {
+    valueScore:  scores?.valueScore  ?? null,
+    growthScore: scores?.growthScore ?? null,
+    netScore:    scores?.netScore    ?? null,
+    style:       scores?.style       ?? null,
+    size:        scores?.size        ?? null,
+    fetchedAt:   new Date().toISOString(),
+    periodOffset: periodOffset || 0,
+    periodLabel: periodLabelFor(data, periodOffset),
+    scoringConfigUsed: deepClone(cfg),
+  };
+}
+
+function isSnapshotStale(snapshot) {
+  if (!snapshot?.fetchedAt) return false;
+  return Date.now() - new Date(snapshot.fetchedAt).getTime() > SNAPSHOT_STALE_MS;
+}
+
+function sortStocks(stocks, col, dir) {
+  const mult = dir === 'desc' ? -1 : 1;
+  const getVal = s => {
+    switch (col) {
+      case 'ticker':    return s.ticker || '';
+      case 'name':      return s.name || '';
+      case 'style':     return s.snapshot?.style;
+      case 'size':      return s.snapshot?.size;
+      case 'value':     return s.snapshot?.valueScore;
+      case 'growth':    return s.snapshot?.growthScore;
+      case 'net':       return s.snapshot?.netScore;
+      case 'period':    return s.snapshot?.periodLabel;
+      case 'refreshed': return s.snapshot?.fetchedAt;
+      default:          return 0;
+    }
+  };
+  return [...stocks].sort((a, b) => {
+    const va = getVal(a), vb = getVal(b);
+    if (va == null && vb == null) return 0;
+    if (va == null) return 1;   // null/undefined always sorts to bottom
+    if (vb == null) return -1;
+    if (typeof va === 'number' && typeof vb === 'number') return (va - vb) * mult;
+    return String(va).localeCompare(String(vb)) * mult;
+  });
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -282,6 +356,44 @@ function navigate(page, params = {}) {
 
 function renderDashboard() {
   const { stocks } = state.data;
+  const colorByTicker = {};
+  stocks.forEach((s, i) => { colorByTicker[s.ticker] = colorForIndex(i); });
+
+  const scored = stocks
+    .filter(s => s.snapshot?.netScore != null)
+    .sort((a, b) => b.snapshot.netScore - a.snapshot.netScore);
+  const topN = scored.slice(0, 5);
+
+  const plotStocks = topN.map(s => ({
+    ticker: s.ticker,
+    scores: {
+      netScore: s.snapshot.netScore,
+      size: s.snapshot.size,
+      style: s.snapshot.style,
+    },
+    color: colorByTicker[s.ticker],
+  }));
+
+  const compactRow = s => {
+    const color = colorByTicker[s.ticker];
+    const snap = s.snapshot;
+    const netLabel = snap.netScore >= 0 ? `+${Math.round(snap.netScore)}` : `${Math.round(snap.netScore)}`;
+    return `
+      <tr class="watchlist-row" data-ticker="${esc(s.ticker)}"
+          onmouseenter="highlightStyleBoxDot('${esc(s.ticker)}')"
+          onmouseleave="resetStyleBoxDots()"
+          onclick="if(event.target.closest('button'))return; lookupTicker('${esc(s.ticker)}')">
+        <td class="font-mono" style="font-weight:600">
+          <span class="ticker-swatch" style="background:${color}"></span>${esc(s.ticker)}
+        </td>
+        <td><span style="color:${color};font-weight:600">${esc(snap.style || '—')}</span></td>
+        <td class="text-right font-mono">${esc(netLabel)}</td>
+        <td class="nowrap text-right">
+          <button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();lookupTicker('${esc(s.ticker)}')">Analyze</button>
+        </td>
+      </tr>`;
+  };
+
   return `
     <div class="page">
       <div class="page-header">
@@ -298,11 +410,31 @@ function renderDashboard() {
           <div class="stat-value">${stocks.length}</div>
         </div>
         <div class="stat-card">
-          <div class="stat-label">Status</div>
-          <div class="stat-value" style="font-size:15px;color:var(--success)">Phase 2</div>
+          <div class="stat-label">Scored</div>
+          <div class="stat-value">${scored.length}</div>
         </div>
       </div>
 
+      ${stocks.length > 0 ? `
+      <div class="card">
+        <div class="card-title">Watchlist — Top ${topN.length || 5} by Net Score</div>
+        ${renderStyleBox(plotStocks, { width: 160 })}
+        <div class="table-wrap" style="margin-top:8px">
+          <table>
+            <thead><tr>
+              <th>Ticker</th><th>Style</th><th class="text-right">Net</th><th></th>
+            </tr></thead>
+            <tbody>
+              ${topN.length > 0
+                ? topN.map(compactRow).join('')
+                : `<tr><td colspan="4" class="text-muted" style="text-align:center;padding:14px">No scored stocks yet — open the Watchlist and refresh a row to populate scores.</td></tr>`}
+            </tbody>
+          </table>
+          ${stocks.length > topN.length
+            ? `<div class="form-hint" style="margin-top:8px;text-align:center"><a href="#" onclick="navigate('watchlist');return false;">View all ${stocks.length} →</a></div>`
+            : ''}
+        </div>
+      </div>` : `
       <div class="card">
         <div class="card-title">How it works</div>
         <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:16px;margin-top:4px;">
@@ -314,44 +446,20 @@ function renderDashboard() {
           <div class="step-card">
             <div class="step-num">2</div>
             <div class="step-label">Score Value &amp; Growth</div>
-            <div class="step-body">10 fundamental factors are scored on a 0–100 scale (Value &amp; Growth).</div>
+            <div class="step-body">10 fundamental factors are scored on a 0–100 scale.</div>
           </div>
           <div class="step-card">
             <div class="step-num">3</div>
             <div class="step-label">Plot the Style Box</div>
-            <div class="step-body">See where the stock lands: Value, Blend, or Growth × Large/Mid/Small (Phase 3).</div>
+            <div class="step-body">See where the stock lands: Value, Blend, or Growth × Large/Mid/Small.</div>
           </div>
           <div class="step-card">
             <div class="step-num">4</div>
             <div class="step-label">Compare stocks</div>
-            <div class="step-body">Save stocks to your watchlist and plot them together (Phase 6).</div>
+            <div class="step-body">Save to your watchlist and plot multiple stocks together.</div>
           </div>
         </div>
-      </div>
-
-      ${stocks.length > 0 ? `
-      <div class="card">
-        <div class="card-title">Watchlist</div>
-        <div class="table-wrap">
-          <table>
-            <thead><tr>
-              <th>Ticker</th><th>Name</th><th>Added</th><th></th>
-            </tr></thead>
-            <tbody>
-              ${stocks.map(s => `
-                <tr>
-                  <td class="font-mono" style="font-weight:600">${esc(s.ticker)}</td>
-                  <td>${esc(s.name || '—')}</td>
-                  <td class="text-muted">${fmtDate(s.addedAt)}</td>
-                  <td class="nowrap text-right">
-                    <button class="btn btn-ghost btn-sm" onclick="lookupTicker('${esc(s.ticker)}')">Analyze</button>
-                    <button class="btn btn-ghost btn-sm" style="color:var(--danger)" onclick="removeFromWatchlist('${esc(s.ticker)}')">Remove</button>
-                  </td>
-                </tr>`).join('')}
-            </tbody>
-          </table>
-        </div>
-      </div>` : ''}
+      </div>`}
     </div>`;
 }
 
@@ -453,8 +561,12 @@ function lookupTicker(ticker) {
   }, 0);
 }
 
-function renderStyleBox(scores, ticker) {
-  const W = 240, H = 240;
+// Renders one or more stock dots on the 3×3 style box.
+// `stocks` is an array of { ticker, scores, color? }.
+// Options: { width=240 }  — height tracks width (square).
+function renderStyleBox(stocks, options = {}) {
+  const W = options.width ?? 240;
+  const H = W;
   const cellW = W / 3, cellH = H / 3;
 
   const COLUMNS = [
@@ -464,6 +576,10 @@ function renderStyleBox(scores, ticker) {
   ];
   const ROWS = ['Large', 'Mid', 'Small'];
 
+  const cellFont  = Math.max(8, Math.round(W * 11 / 240));
+  const labelFont = Math.max(9, Math.round(W * 11 / 240));
+  const R = options.dotRadius ?? Math.max(6, Math.round(W * 10 / 240));
+
   const cellRects = [];
   const cellLabels = [];
   for (let r = 0; r < 3; r++) {
@@ -472,8 +588,8 @@ function renderStyleBox(scores, ticker) {
       const cx = c * cellW + cellW / 2;
       const cy = r * cellH + cellH / 2;
       cellLabels.push(
-        `<text x="${cx}" y="${cy - 3}" text-anchor="middle" font-size="11" fill="#a1a1aa">${ROWS[r]}</text>` +
-        `<text x="${cx}" y="${cy + 11}" text-anchor="middle" font-size="11" fill="#a1a1aa">${COLUMNS[c].name}</text>`
+        `<text x="${cx}" y="${cy - 3}" text-anchor="middle" font-size="${cellFont}" fill="#a1a1aa">${ROWS[r]}</text>` +
+        `<text x="${cx}" y="${cy + cellFont}" text-anchor="middle" font-size="${cellFont}" fill="#a1a1aa">${COLUMNS[c].name}</text>`
       );
     }
   }
@@ -486,7 +602,9 @@ function renderStyleBox(scores, ticker) {
 
   const svgOpen = `<svg viewBox="0 0 ${W} ${H}" width="100%" style="max-width:${W}px;display:block;margin:0 auto;font-family:var(--font)"`;
 
-  if (!scores || scores.netScore == null) {
+  const valid = (stocks || []).filter(s => s && s.scores && s.scores.netScore != null);
+
+  if (valid.length === 0) {
     return `
       <div class="style-box-wrap">
         ${svgOpen} role="img" aria-label="Style box — insufficient data">
@@ -501,35 +619,101 @@ function renderStyleBox(scores, ticker) {
       </div>`;
   }
 
-  const { netScore, size, style } = scores;
-  const R = 10;
-  const xRaw = ((netScore + 100) / 200) * W;
-  const x = Math.max(R + 2, Math.min(W - R - 2, xRaw));
-  const y = size === 'large' ? cellH * 0.5
-          : size === 'small' ? cellH * 2.5
-          : cellH * 1.5;
+  // Compute (x, y) and assigned color for each dot.
+  const positions = valid.map((s, i) => {
+    const { netScore, size, style } = s.scores;
+    const xRaw = ((netScore + 100) / 200) * W;
+    const x = Math.max(R + 2, Math.min(W - R - 2, xRaw));
+    const y = size === 'large' ? cellH * 0.5
+            : size === 'small' ? cellH * 2.5
+            : cellH * 1.5;
+    return {
+      x, y,
+      ticker: s.ticker,
+      style,
+      size,
+      netScore,
+      color: s.color || colorForIndex(i),
+    };
+  });
 
-  const DOT_COLORS = { Value: '#ca8a04', Blend: '#2563eb', Growth: '#16a34a' };
-  const dotColor = DOT_COLORS[style] || '#71717a';
+  // Cluster nearby dots and alternate label side (left/right) within each cluster.
+  const sides = positions.map(() => 'right');
+  const visited = new Set();
+  for (let i = 0; i < positions.length; i++) {
+    if (visited.has(i)) continue;
+    const cluster = [i];
+    visited.add(i);
+    for (let j = i + 1; j < positions.length; j++) {
+      if (visited.has(j)) continue;
+      const dx = positions[i].x - positions[j].x;
+      const dy = positions[i].y - positions[j].y;
+      if (Math.hypot(dx, dy) < R * 2) {
+        cluster.push(j);
+        visited.add(j);
+      }
+    }
+    cluster.forEach((idx, k) => {
+      sides[idx] = k % 2 === 0 ? 'right' : 'left';
+    });
+  }
 
-  const labelOnRight = x < W - 50;
-  const labelX = labelOnRight ? x + R + 5 : x - R - 5;
-  const labelAnchor = labelOnRight ? 'start' : 'end';
+  const dotsAndLabels = positions.map((p, i) => {
+    // Fall back to opposite side if the cluster-assigned side would clip a box edge.
+    const labelWidth = p.ticker.length * labelFont * 0.6 + 6;
+    const fitsRight  = p.x + R + labelWidth <= W;
+    const fitsLeft   = p.x - R - labelWidth >= 0;
+    const side = sides[i] === 'right'
+      ? (fitsRight ? 'right' : 'left')
+      : (fitsLeft  ? 'left'  : 'right');
+    const labelX = side === 'right' ? p.x + R + 4 : p.x - R - 4;
+    const anchor = side === 'right' ? 'start' : 'end';
+    const tip = `${p.ticker} — ${p.size}-cap ${p.style} (net ${p.netScore >= 0 ? '+' : ''}${Math.round(p.netScore)})`;
+    return `
+      <circle class="stylebox-dot" data-ticker="${esc(p.ticker)}" data-r="${R}" cx="${p.x}" cy="${p.y}" r="${R}" fill="${p.color}" stroke="#ffffff" stroke-width="2.5">
+        <title>${esc(tip)}</title>
+      </circle>
+      <text class="stylebox-label" data-ticker="${esc(p.ticker)}" x="${labelX}" y="${p.y + 4}" text-anchor="${anchor}" font-size="${labelFont}" font-weight="700" fill="${p.color}" style="paint-order:stroke;stroke:#ffffff;stroke-width:3px;stroke-linejoin:round">${esc(p.ticker)}</text>`;
+  });
 
-  const tip = `${ticker} — ${size}-cap ${style} (net ${netScore >= 0 ? '+' : ''}${Math.round(netScore)})`;
+  const aria = valid.length === 1
+    ? `Style box for ${valid[0].ticker}: ${valid[0].scores.size}-cap ${valid[0].scores.style}`
+    : `Style box comparing ${valid.length} stocks`;
 
   return `
     <div class="style-box-wrap">
-      ${svgOpen} role="img" aria-label="Style box for ${esc(ticker)}: ${esc(size)}-cap ${esc(style)}">
+      ${svgOpen} role="img" aria-label="${esc(aria)}">
         ${cellRects.join('')}
         ${gridLines.join('')}
         ${cellLabels.join('')}
-        <circle cx="${x}" cy="${y}" r="${R}" fill="${dotColor}" stroke="#ffffff" stroke-width="2.5">
-          <title>${esc(tip)}</title>
-        </circle>
-        <text x="${labelX}" y="${y + 4}" text-anchor="${labelAnchor}" font-size="11" font-weight="700" fill="#18181b" style="paint-order:stroke;stroke:#ffffff;stroke-width:3px;stroke-linejoin:round">${esc(ticker)}</text>
+        ${dotsAndLabels.join('')}
       </svg>
     </div>`;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// STYLE BOX HOVER HIGHLIGHTING (used by watchlist + dashboard rows)
+// ═══════════════════════════════════════════════════════════════
+
+function highlightStyleBoxDot(ticker) {
+  document.querySelectorAll('.stylebox-dot').forEach(el => {
+    if (el.dataset.ticker !== ticker) return;
+    const baseR = parseFloat(el.dataset.r || el.getAttribute('r') || '10');
+    el.setAttribute('r', baseR + 4);
+    el.setAttribute('stroke-width', '3.5');
+    el.parentNode.appendChild(el);
+  });
+  document.querySelectorAll('.stylebox-label').forEach(el => {
+    if (el.dataset.ticker === ticker) el.parentNode.appendChild(el);
+  });
+}
+
+function resetStyleBoxDots() {
+  document.querySelectorAll('.stylebox-dot').forEach(el => {
+    const baseR = el.dataset.r || '10';
+    el.setAttribute('r', baseR);
+    el.setAttribute('stroke-width', '2.5');
+  });
 }
 
 function renderScores(scores, ticker) {
@@ -562,7 +746,7 @@ function renderScores(scores, ticker) {
 
   return `
     ${warning}
-    ${renderStyleBox(scores, ticker)}
+    ${renderStyleBox([{ ticker, scores }])}
     <div class="score-grid">
       <div class="score-card">
         <div class="score-card-label">Value Score</div>
@@ -728,7 +912,14 @@ function addToWatchlist() {
     return;
   }
   const name = data.price?.longName || data.price?.shortName || ticker;
-  state.data.stocks.push({ ticker, name, addedAt: new Date().toISOString() });
+  const cfg = state.data.settings.scoringConfig;
+  const scores = computeScores(data, cfg, { periodOffset: currentPeriod });
+  state.data.stocks.push({
+    ticker,
+    name,
+    addedAt: new Date().toISOString(),
+    snapshot: makeSnapshot(scores, currentPeriod, cfg, data),
+  });
   saveData();
   // Re-render just the result section to update the button
   document.getElementById('lookup-result').innerHTML = renderQuoteResult(currentQuote);
@@ -746,49 +937,174 @@ function removeFromWatchlist(ticker) {
   showToast(`${ticker} removed from watchlist`);
 }
 
+async function refreshWatchlistStock(ticker) {
+  const stock = state.data.stocks.find(s => s.ticker === ticker);
+  if (!stock) return;
+  showToast(`Refreshing ${ticker}…`);
+  try {
+    const res = await fetch(`/api/quote/${encodeURIComponent(ticker)}`);
+    const json = await res.json();
+    if (!json.ok) throw new Error(json.error || 'Fetch failed');
+    const cfg = state.data.settings.scoringConfig;
+    const scores = computeScores(json.data, cfg, { periodOffset: 0 });
+    stock.name = json.data.price?.longName || json.data.price?.shortName || ticker;
+    stock.snapshot = makeSnapshot(scores, 0, cfg, json.data);
+    saveData();
+    navigate(state.page);
+    showToast(`${ticker} refreshed`, 'success');
+  } catch (err) {
+    showToast(`${ticker}: ${err.message}`, 'error');
+  }
+}
+
+function setWatchlistSort(col) {
+  if (watchlistSort.col === col) {
+    watchlistSort.dir = watchlistSort.dir === 'desc' ? 'asc' : 'desc';
+  } else {
+    watchlistSort.col = col;
+    watchlistSort.dir = ['ticker', 'name', 'style', 'size', 'period'].includes(col) ? 'asc' : 'desc';
+  }
+  navigate('watchlist');
+}
+
 // ═══════════════════════════════════════════════════════════════
 // WATCHLIST PAGE
 // ═══════════════════════════════════════════════════════════════
 
 function renderWatchlist() {
   const { stocks } = state.data;
-  return `
-    <div class="page">
-      <div class="page-header">
-        <div>
-          <div class="page-title">Watchlist</div>
-          <div class="page-subtitle">${stocks.length} stock${stocks.length !== 1 ? 's' : ''} saved</div>
-        </div>
-        <button class="btn btn-primary" onclick="navigate('lookup')">+ Add Stock</button>
-      </div>
 
-      <div class="card">
-        ${stocks.length === 0 ? `
+  if (stocks.length === 0) {
+    return `
+      <div class="page">
+        <div class="page-header">
+          <div>
+            <div class="page-title">Watchlist</div>
+            <div class="page-subtitle">0 stocks saved</div>
+          </div>
+          <button class="btn btn-primary" onclick="navigate('lookup')">+ Add Stock</button>
+        </div>
+        <div class="card">
           <div class="empty-state">
             <div class="empty-state-icon">📋</div>
             <div class="empty-state-title">No stocks saved yet</div>
             <div class="empty-state-body">Look up a stock and click "Add to Watchlist".</div>
             <button class="btn btn-primary" onclick="navigate('lookup')">Look Up Stock</button>
-          </div>` : `
-          <div class="table-wrap">
-            <table>
-              <thead><tr>
-                <th>Ticker</th><th>Name</th><th>Added</th><th></th>
-              </tr></thead>
-              <tbody>
-                ${stocks.map(s => `
-                  <tr>
-                    <td class="font-mono" style="font-weight:600">${esc(s.ticker)}</td>
-                    <td>${esc(s.name || '—')}</td>
-                    <td class="text-muted">${fmtDate(s.addedAt)}</td>
-                    <td class="nowrap text-right">
-                      <button class="btn btn-ghost btn-sm" onclick="lookupTicker('${esc(s.ticker)}')">Analyze</button>
-                      <button class="btn btn-ghost btn-sm" style="color:var(--danger)" onclick="removeFromWatchlist('${esc(s.ticker)}')">Remove</button>
+          </div>
+        </div>
+      </div>`;
+  }
+
+  // Color is stable per ticker (based on insertion order), independent of sort.
+  const colorByTicker = {};
+  stocks.forEach((s, i) => { colorByTicker[s.ticker] = colorForIndex(i); });
+
+  const sorted = sortStocks(stocks, watchlistSort.col, watchlistSort.dir);
+
+  const plotStocks = stocks
+    .filter(s => s.snapshot?.netScore != null)
+    .map(s => ({
+      ticker: s.ticker,
+      scores: {
+        netScore: s.snapshot.netScore,
+        size: s.snapshot.size,
+        style: s.snapshot.style,
+      },
+      color: colorByTicker[s.ticker],
+    }));
+
+  const arrow = (col) =>
+    watchlistSort.col === col ? (watchlistSort.dir === 'desc' ? ' ↓' : ' ↑') : '';
+  const sortTh = (col, label, extraClass = '') =>
+    `<th class="sort-th ${extraClass}" onclick="setWatchlistSort('${col}')">${esc(label)}<span class="sort-arrow">${arrow(col)}</span></th>`;
+
+  const sizeLabelOf = size => ({ large: 'Large', mid: 'Mid', small: 'Small' }[size] || '—');
+
+  return `
+    <div class="page">
+      <div class="page-header">
+        <div>
+          <div class="page-title">Watchlist</div>
+          <div class="page-subtitle">${stocks.length} stock${stocks.length !== 1 ? 's' : ''} saved · hover a row to highlight its dot, click to analyze</div>
+        </div>
+        <button class="btn btn-primary" onclick="navigate('lookup')">+ Add Stock</button>
+      </div>
+
+      <div class="card">
+        <div class="card-title">Style Box Comparison</div>
+        ${renderStyleBox(plotStocks)}
+        <div class="form-hint" style="text-align:center;margin-top:4px;max-width:520px;margin-left:auto;margin-right:auto">
+          Each stock's position uses the scoring weights that were active when it was last refreshed — not your current settings. Refresh a row to re-score with the current weights.
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">Stocks</div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr>
+              ${sortTh('ticker', 'Ticker')}
+              ${sortTh('name',   'Name')}
+              ${sortTh('style',  'Style')}
+              ${sortTh('size',   'Size')}
+              ${sortTh('value',  'Value',  'text-right')}
+              ${sortTh('growth', 'Growth', 'text-right')}
+              ${sortTh('net',    'Net',    'text-right')}
+              ${sortTh('period', 'Period')}
+              ${sortTh('refreshed', 'Refreshed')}
+              <th class="text-right">Actions</th>
+            </tr></thead>
+            <tbody>
+              ${sorted.map(s => {
+                const snap = s.snapshot;
+                const color = colorByTicker[s.ticker];
+                const stale = isSnapshotStale(snap);
+                const styleHtml = snap?.style
+                  ? `<span style="color:${color};font-weight:600">${esc(snap.style)}</span>`
+                  : `<span class="text-muted">—</span>`;
+                const sizeHtml = snap?.size
+                  ? esc(sizeLabelOf(snap.size))
+                  : `<span class="text-muted">—</span>`;
+                const numCell = v => v != null ? `<span class="font-mono">${Math.round(v)}</span>` : `<span class="text-muted">—</span>`;
+                const netLabel = snap?.netScore != null
+                  ? (snap.netScore >= 0 ? `+${Math.round(snap.netScore)}` : `${Math.round(snap.netScore)}`)
+                  : null;
+                const periodHtml = snap?.periodLabel
+                  ? (snap.periodLabel === 'TTM'
+                      ? `<span class="badge neutral">TTM</span>`
+                      : `<span class="badge">${esc(snap.periodLabel)}</span>`)
+                  : `<span class="text-muted">—</span>`;
+                const refreshedHtml = snap?.fetchedAt
+                  ? (stale
+                      ? `<span class="text-muted" title="Snapshot is over 7 days old">${fmtDate(snap.fetchedAt)} <span class="badge-stale">stale</span></span>`
+                      : `<span class="text-muted">${fmtDate(snap.fetchedAt)}</span>`)
+                  : `<span class="text-muted">—</span>`;
+                const refreshLabel = snap ? 'Refresh' : 'Score';
+                return `
+                  <tr class="watchlist-row" data-ticker="${esc(s.ticker)}"
+                      onmouseenter="highlightStyleBoxDot('${esc(s.ticker)}')"
+                      onmouseleave="resetStyleBoxDots()"
+                      onclick="if(event.target.closest('button'))return; lookupTicker('${esc(s.ticker)}')">
+                    <td class="font-mono" style="font-weight:600">
+                      <span class="ticker-swatch" style="background:${color}"></span>${esc(s.ticker)}
                     </td>
-                  </tr>`).join('')}
-              </tbody>
-            </table>
-          </div>`}
+                    <td>${esc(s.name || '—')}</td>
+                    <td>${styleHtml}</td>
+                    <td>${sizeHtml}</td>
+                    <td class="text-right">${numCell(snap?.valueScore)}</td>
+                    <td class="text-right">${numCell(snap?.growthScore)}</td>
+                    <td class="text-right">${netLabel != null ? `<span class="font-mono">${esc(netLabel)}</span>` : `<span class="text-muted">—</span>`}</td>
+                    <td>${periodHtml}</td>
+                    <td>${refreshedHtml}</td>
+                    <td class="nowrap text-right">
+                      <button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();refreshWatchlistStock('${esc(s.ticker)}')">${refreshLabel}</button>
+                      <button class="btn btn-ghost btn-sm" style="color:var(--danger)" onclick="event.stopPropagation();removeFromWatchlist('${esc(s.ticker)}')">Remove</button>
+                    </td>
+                  </tr>`;
+              }).join('')}
+            </tbody>
+          </table>
+        </div>
       </div>
     </div>`;
 }
