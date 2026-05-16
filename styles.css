@@ -433,7 +433,26 @@ textarea { resize: vertical; min-height: 72px; }
   max-height: 420px;
   white-space: pre;
   color: var(--muted);
+  margin-top: 12px;
 }
+
+.debug-card { padding: 14px 20px; }
+.debug-card > summary {
+  cursor: pointer;
+  list-style: none;
+  margin: 0;
+  user-select: none;
+}
+.debug-card > summary::-webkit-details-marker { display: none; }
+.debug-card > summary::before {
+  content: '▸';
+  display: inline-block;
+  width: 12px;
+  color: var(--muted);
+  transition: transform 0.1s;
+}
+.debug-card[open] > summary::before { transform: rotate(90deg); }
+.debug-card:hover > summary { color: var(--accent); }
 
 /* ── How-it-works step cards ── */
 .step-card {

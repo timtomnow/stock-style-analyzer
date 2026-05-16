@@ -1,6 +1,6 @@
-# AppName — Codebase Guide for Claude
+# Stock Style Analyzer — Codebase Guide for Claude
 
-This is a self-contained, single-page app template. No framework, no build step, no npm. Four files: `index.html`, `styles.css`, `app.js`, `README.md`. Runs by opening `index.html` in any browser. marked.js loaded from CDN (internet required for help modal). Data persisted to `localStorage`.
+A single-page app that scores stocks on Value and Growth dimensions, plots them on a 3×3 style box, and lets you compare a watchlist of stocks side by side. The frontend is plain HTML/CSS/JS — no framework, no build step. A tiny Node/Express server proxies requests to Yahoo Finance because direct browser access is blocked by CORS.
 
 ---
 
@@ -8,28 +8,36 @@ This is a self-contained, single-page app template. No framework, no build step,
 
 | File | Purpose |
 |---|---|
-| `index.html` | Shell. Loads marked.js CDN, `styles.css`, `app.js`. Contains `#app`, `#sidebar`, `#main`, `#modal-overlay`, `#toast-container`. |
+| `index.html` | Shell. Loads `styles.css`, `scoring.js`, `app.js`, and `marked.js` (CDN, for the help modal). |
 | `styles.css` | Full design system. CSS variables in `:root`. No external dependencies. |
-| `app.js` | Everything — state, data, all page renders, modals, routing, help modal. |
-| `README.md` | End-user instructions (Markdown). |
+| `scoring.js` | **Pure** scoring engine — factor definitions, threshold tables, weight handling, `computeScores()`. Zero DOM dependencies. Loaded before `app.js`. |
+| `app.js` | Everything else — state, routing, page renders, modals, watchlist actions, style-box rendering. |
+| `server.js` | ~60-line Express server. Serves static files and exposes `GET /api/quote/:ticker`. In-memory 5-minute cache. |
+| `package.json` | ESM, three dependencies: `express`, `cors`, `yahoo-finance2`. |
+| `README.md` | End-user instructions. |
+| `PLAN.md` | Original build plan. Phases 1–6 complete. |
 
 ---
 
 ## Architecture
 
-Single-page app with manual routing. No framework. Pages are rendered by functions that return HTML strings assigned to `document.getElementById('main').innerHTML`.
+Single-page app with manual routing. Pages are functions that return HTML strings assigned to `document.getElementById('main').innerHTML`. No framework, no virtual DOM, no reactivity — render functions are called explicitly via `navigate()`.
 
 ### State
 
 ```js
 const state = {
-  data: null,        // all persisted data, mirrors localStorage
+  data: null,        // persisted to localStorage under STORAGE_KEY
   page: 'dashboard',
-  params: {},        // current page params (e.g. { id: 'some-id' })
+  params: {},        // current page params
 };
+
+let currentQuote  = null;             // last fetched quote (not persisted)
+let currentPeriod = 0;                // 0 = TTM, N = N quarters back (not persisted)
+let watchlistSort = { col: 'net', dir: 'desc' };  // watchlist sort state (not persisted)
 ```
 
-`state.data` is loaded from `localStorage` on init and saved (`saveData()`) after every mutation.
+`state.data` is loaded from localStorage on init and saved via `saveData()` after every mutation.
 
 ### Navigation
 
@@ -37,85 +45,136 @@ const state = {
 navigate(page, params = {})
 ```
 
-Sets `state.page` / `state.params`, updates sidebar active class, calls the appropriate render function, sets `#main.innerHTML`.
-
-Sub-pages without their own sidebar entry are mapped in `SIDEBAR_MAP` to their parent page for active highlighting.
+Sets `state.page` / `state.params`, updates sidebar active class, calls the matching `render*()`, sets `#main.innerHTML`. Sub-pages without a sidebar entry are mapped in `SIDEBAR_MAP` (currently empty — all pages have sidebar entries).
 
 ---
 
 ## Data Model
 
-All data lives in `state.data` and is saved as a single JSON blob to `localStorage` under `STORAGE_KEY`.
-
-### Top-level shape
+Stored in `state.data` and persisted as a single JSON blob to localStorage under `STORAGE_KEY = 'stock_analyzer_v1'`.
 
 ```js
 {
   version: 1,
-  items: Item[],
-  settings: { appName: 'AppName' },
+  stocks: Stock[],
+  settings: {
+    appName: 'Stock Style Analyzer',
+    scoringConfig: { weights: {...}, enabled: {...} },
+  },
 }
 ```
 
-### Item
+### Stock
 
 ```js
 {
-  id,          // uuid string
-  name,        // string
-  description, // string
-  category,    // string — from ITEM_CATEGORIES constant
-  value,       // number
-  createdAt,   // ISO date string
+  ticker,      // 'AAPL'
+  name,        // 'Apple Inc.'
+  addedAt,     // ISO date
+  snapshot,    // Snapshot | null  — null for pre-Phase-6 entries
 }
 ```
+
+### Snapshot
+
+Captured by `makeSnapshot(scores, periodOffset, cfg, data)` whenever a stock is added or refreshed:
+
+```js
+{
+  valueScore,   // 0–100 or null
+  growthScore,  // 0–100 or null
+  netScore,     // -100..+100 or null
+  style,        // 'Value' | 'Blend' | 'Growth' | 'Unknown'
+  size,         // 'large' | 'mid' | 'small' | 'unknown'
+  fetchedAt,    // ISO date
+  periodOffset, // 0 = TTM, N = N quarters back
+  periodLabel,  // 'TTM' or 'Q3 2024'
+  scoringConfigUsed,  // deep-cloned weights/enabled at snapshot time
+}
+```
+
+The watchlist style box plots each stock using its own snapshot — **not** the current scoring config. Refresh a row to re-score with the current settings.
+
+---
+
+## Scoring Engine (`scoring.js`)
+
+Pure module. Exposes (as globals) `VALUE_FACTORS`, `GROWTH_FACTORS`, `defaultScoringConfig()`, `isDefaultScoringConfig()`, `computeScores(data, config, options)`.
+
+Each factor has a key (`pe`, `pb`, `ps`, `pcf`, `yield`, `eps_fwd`, `eps_hist`, `rev`, `cf`, `bv`) and a fixed threshold table that maps raw values to 0–100 scores.
+
+`computeScores(data, config, { periodOffset })`:
+- For Value factors and `eps_fwd`/`yield` (point-in-time data): only computed when `periodOffset === 0`. Yahoo Finance does not return historical multiples.
+- For YoY-growth factors (`rev`, `cf`, `bv`): recomputed from quarterly statements, shifted by `periodOffset`.
+- `eps_hist`: 3-year CAGR using netIncome as an EPS proxy (Yahoo doesn't return basicEPS).
+- Returns `{ valueScore, growthScore, netScore, style, size, factors }`. Each `factors[key]` has `{ raw, score, label, weight, enabled }`.
+
+To add a factor: append to `VALUE_FACTORS` or `GROWTH_FACTORS`, add a threshold table to `VALUE_STEPS` or `GROWTH_STEPS`, and add a key to `extractRawValues()`. The settings page picks it up automatically.
+
+---
+
+## Server (`server.js`)
+
+`GET /api/quote/:ticker` calls `yahooFinance.quoteSummary()` with the seven modules the frontend needs and returns `{ ok: true, ticker, data }`. Errors return `{ ok: false, error }` with HTTP 400 / 404 / 429. The 5-minute in-memory cache avoids hammering Yahoo on repeat lookups.
+
+Ticker input is validated against `/^[A-Z0-9.\-^=]+$/` before any external call.
 
 ---
 
 ## UI Patterns
 
+### Style Box — `renderStyleBox(stocks, options)`
+
+Renders a 3×3 SVG grid with one dot per stock. Each `stocks[i]` is `{ ticker, scores, color? }` where `scores` is `{ netScore, size, style }`.
+
+- Dot colors cycle through `STOCK_COLORS` (8 palette entries) unless an explicit `color` is supplied
+- Dots within 2R of each other are clustered and their labels alternated left/right
+- Label side falls back to the opposite edge if it would clip the box bounds
+- `data-ticker` and `data-r` attributes on dots let hover handlers find and resize them
+- `options.width` controls the SVG size (default 240; dashboard uses 160 for a mini box)
+
+`highlightStyleBoxDot(ticker)` / `resetStyleBoxDots()` are wired to `onmouseenter` / `onmouseleave` on watchlist and dashboard rows.
+
 ### Modals
 
-`showModal(title, bodyHtml, onSave, saveLabel)` — injects HTML into `#modal`, adds class `open` to `#modal-overlay`. `onSave` must return `true` to close, `false` to keep open (for validation).
-
-`showConfirm(title, msg, onConfirm, confirmLabel)` — destructive action variant.
-
-`hideModal()` — removes `open` class. Also triggered by clicking the overlay backdrop.
-
-All modal form fields use plain DOM reads (`document.getElementById(...).value`) inside the `onSave` callback.
+`showModal(title, bodyHtml, onSave, saveLabel)` — `onSave` returns `true` to close, `false` to keep open. `showConfirm(title, msg, onConfirm)` for destructive actions. `hideModal()` is also triggered by clicking the overlay backdrop.
 
 ### Toasts
 
-`showToast(msg, type)` — type is `''` (dark), `'success'` (green), or `'error'` (red). Auto-removes after 3.2s.
-
-### HTML Escaping
-
-`esc(str)` escapes `& < > "` in all user-supplied strings interpolated into HTML templates. Use it everywhere user data appears in template literals.
+`showToast(msg, type)` — `type` is `''` (dark), `'success'` (green), or `'error'` (red). Auto-removes after 3.2s.
 
 ### Help Modal
 
-`showHelpModal(tab)` — async. Opens a wide modal (`modal-wide` class, 760px) with two tabs: **User Guide** and **Developer Guide**. Fetches `README.md` and `CLAUDE.md` at runtime via `fetch()` and renders them with `marked.parse()`. Falls back to `<pre>` if marked is unavailable. Shows an actionable error if the app is opened via `file://` instead of HTTP.
+`showHelpModal(tab)` opens a wide modal with User Guide and Developer Guide tabs. Fetches `README.md` and `CLAUDE.md` at runtime and renders with `marked.parse()`. The `?` button in the sidebar logo triggers it.
 
-`switchHelpTab(tab)` — toggles visibility of `#help-readme` / `#help-claude` divs and updates `.active` on tab buttons.
+### HTML Escaping
 
-`hideModal()` removes `modal-wide` in addition to closing, so normal modals are unaffected.
+`esc(str)` escapes `& < > "`. Use everywhere user-supplied or external data appears in template literals (ticker names, factor values, etc.).
 
-The `?` button lives in the `.sidebar-logo` div (flexbox layout), rendered by `buildSidebar()`.
+---
+
+## Watchlist Specifics
+
+`state.data.stocks` is the source of truth. Each stock's palette color is assigned by its **insertion index**, so colors stay stable when the table is re-sorted. `sortStocks(stocks, col, dir)` returns a sorted copy with nulls always at the bottom regardless of direction.
+
+A snapshot is considered stale once `Date.now() - fetchedAt > 7 days` (see `SNAPSHOT_STALE_MS`). The stale badge is purely visual — staleness does not block any action.
+
+`refreshWatchlistStock(ticker)` always re-fetches with `periodOffset: 0` (TTM) and re-scores using the current `scoringConfig`. The user can still pick historical periods from the Lookup page.
 
 ---
 
 ## Adding a New Page
 
-1. Write a `renderFoo()` function returning an HTML string.
-2. Add a `case 'foo':` in the `navigate()` switch.
-3. Add a nav item to the `nav` array in `buildSidebar()` if it needs a sidebar entry.
-4. If it's a sub-page of an existing section, add it to `SIDEBAR_MAP`.
+1. Write a `renderFoo()` returning HTML.
+2. Add a `case 'foo':` in `navigate()`.
+3. Add a nav entry in `buildSidebar()` if it needs a sidebar item.
+4. If it's a sub-page, add it to `SIDEBAR_MAP`.
 
-## Adding a New Field to a Data Model
+## Adding a Field to the Stock or Snapshot
 
-1. Add the field to the relevant `default*()` function so new records get it.
-2. Update the modal form (add input, read it in `onSave`).
-3. Update display logic as needed.
+1. Update `makeSnapshot()` (or the stock initializer in `addToWatchlist`).
+2. Add a migration line in `loadData()` so older saves get a default.
+3. Render the field where it should appear.
 4. Existing records without the field will get `undefined` — use `?? defaultValue` defensively.
 
 ---
@@ -123,19 +182,25 @@ The `?` button lives in the `.sidebar-logo` div (flexbox layout), rendered by `b
 ## Key Constants
 
 ```js
-STORAGE_KEY = 'app_v1'
-ITEM_CATEGORIES  // array of category name strings
-SIDEBAR_MAP      // maps sub-page names to parent sidebar page names
+STORAGE_KEY        = 'stock_analyzer_v1'
+STOCK_COLORS       // 8-color palette for multi-dot style box
+SNAPSHOT_STALE_MS  // 7 days
+SIDEBAR_MAP        // sub-page → parent (currently empty)
+```
+
+In `scoring.js`:
+
+```js
+VALUE_FACTORS, GROWTH_FACTORS   // {key, label} arrays
+VALUE_STEPS, GROWTH_STEPS       // threshold tables per factor key
+SIZE_THRESHOLDS                 // market cap bands for Large/Mid/Small
 ```
 
 ---
 
-## Customising This Template
+## Known Limits
 
-| Goal | What to change |
-|---|---|
-| Rename the app | Update `<title>` in `index.html`, the logo text in `buildSidebar()`, and the `appName` default in `defaultData()`. Or just use the Settings page at runtime. |
-| Change the accent colour | Update `--accent` and `--accent-light` in `:root` in `styles.css`. |
-| Add a data type | Add a `defaultFoo()` function, a `foos: []` array to `defaultData()`, CRUD functions, and a render page. |
-| Add CDN libraries | Add a `<script>` tag in `index.html` before `app.js`. |
-| Persist more state | Add fields to `defaultData()` and read/write them via `state.data` + `saveData()`. |
+- Historical multiples (P/E etc) are point-in-time only — N/A for any non-TTM period
+- Yahoo Finance occasionally throttles; the server returns a friendly 429 with retry guidance
+- `eps_hist` uses netIncome as a proxy because Yahoo doesn't return basicEPS in `quoteSummary`
+- Multi-dot label placement is two-state (left/right) — three overlapping dots may still have crowded labels

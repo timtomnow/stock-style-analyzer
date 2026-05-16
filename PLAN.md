@@ -106,23 +106,23 @@ This is more than enough to compute all 10 style box factors and more.
 
 ## Phased Build Plan
 
-### Phase 1 — Foundation & Data Layer (Session 1)
+### Phase 1 — Foundation & Data Layer ✅ COMPLETE
 **Goal:** Enter a ticker, get back raw fundamental data displayed on screen.
 
-- [ ] Add `package.json`, install `express`, `yahoo-finance2`, `cors`
-- [ ] Write `server.js` (~50 lines):
+- [x] Add `package.json`, install `express`, `yahoo-finance2`, `cors`
+- [x] Write `server.js` (~50 lines):
   - Serve static files from project root
   - `GET /api/quote/:ticker` → calls `quoteSummary`, returns JSON
-- [ ] Add a `.gitignore` for `node_modules/`
-- [ ] Update `README.md` with new "run `node server.js`" instructions
-- [ ] In the frontend, add a **Stock Lookup** page with a ticker input and "Fetch" button
-- [ ] Display the raw returned data in a debug panel (just confirm the pipeline works)
+- [x] Add a `.gitignore` for `node_modules/`
+- [x] Update `README.md` with new "run `node server.js`" instructions
+- [x] In the frontend, add a **Stock Lookup** page with a ticker input and "Fetch" button
+- [x] Display the raw returned data in a debug panel (just confirm the pipeline works)
 
 **Success criteria:** Type `AAPL`, click Fetch, see P/E, P/B, revenue growth numbers appear.
 
 ---
 
-### Phase 2 — Scoring Engine (Session 1–2)
+### Phase 2 — Scoring Engine ✅ COMPLETE
 **Goal:** Compute Value Score and Growth Score from the raw data.
 
 The scoring engine is a pure JS module (no dependencies):
@@ -162,7 +162,7 @@ const GROWTH_FACTORS = [
 
 ---
 
-### Phase 3 — Style Box Visualization (Session 2)
+### Phase 3 — Style Box Visualization ✅ COMPLETE
 **Goal:** Render the classic 3×3 box and plot the stock in it.
 
 ```
@@ -186,7 +186,7 @@ The circle can be continuous (not snapped to a cell) for a smoother, more inform
 
 ---
 
-### Phase 4 — Configurable Weights (Session 2–3)
+### Phase 4 — Configurable Weights ✅ COMPLETE
 **Goal:** Let users change exactly which factors count and how much.
 
 - **Weights panel:** Each factor gets a slider (0–3x) for its contribution weight
@@ -203,7 +203,7 @@ This means the scoring is fully transparent and reproducible.
 
 ---
 
-### Phase 5 — Date / Period Selection (Session 3)
+### Phase 5 — Date / Period Selection ✅ COMPLETE
 **Goal:** Analyze a stock as of a specific period (e.g. "as of Q2 2023").
 
 - Dropdown: "TTM", "Q4 2024", "Q3 2024", etc. (last 8 quarters, dynamically built from the fetched data)
@@ -215,13 +215,25 @@ This means the scoring is fully transparent and reproducible.
 
 ---
 
-### Phase 6 — Stock History & Comparison (Session 3–4)
+### Phase 6 — Stock History & Comparison ✅ COMPLETE
 **Goal:** Save multiple analyzed stocks and compare them.
 
-- Analyzed stocks are saved to `state.data.stocks[]` (persist to localStorage)
-- A **Portfolio/Watchlist** view shows a table of saved stocks with their current scores
-- Multiple stocks can be plotted on the same style box simultaneously (each a different colored dot)
-- This is the direct precursor to the "style clusters" goal
+- [x] Analyzed stocks are saved to `state.data.stocks[]` with scoring snapshots persisted to localStorage
+- [x] **Watchlist** view shows a sortable table of saved stocks with their scores and a multi-dot style box above it
+- [x] Multiple stocks plot on the same style box, each with a distinct color from an 8-entry palette
+- [x] Per-row Refresh re-scores using current weights; >7-day-old snapshots show a `stale` badge
+- [x] Dashboard shows top-5-by-net-score in a mini style box when stocks are saved
+- [x] Hovering a row highlights its dot in the box; clicking jumps to the Lookup page
+
+---
+
+## V1 Polish — Cleanup Pass ✅ COMPLETE
+
+- [x] README rewritten to cover all current features (scoring, style box, period selector, weights, watchlist comparison)
+- [x] CLAUDE.md updated to reflect actual architecture (scoring.js, server.js, snapshot shape, watchlist sort state)
+- [x] Raw API debug pane gated behind a collapsible `<details>` toggle (collapsed by default)
+- [x] Phase X / "coming soon" hints removed from UI copy
+- [x] Stat card on Dashboard switched from "Phase 2" to live "Scored" count
 
 ---
 

@@ -814,7 +814,6 @@ function renderQuoteResult(q) {
   const mktCap = price.marketCap?.raw ?? price.marketCap;
   const currentPrice = price.regularMarketPrice?.raw ?? price.regularMarketPrice;
 
-  // Key data points for the debug panel
   const rows = [
     ['Price',           currentPrice != null ? `${cur} ${fmtNum(currentPrice)}` : '—'],
     ['Market Cap',      fmtMktCap(mktCap)],
@@ -894,10 +893,10 @@ function renderQuoteResult(q) {
       )}
     </div>
 
-    <div class="card" style="margin-top:16px">
-      <div class="card-title">Raw API Response (debug)</div>
+    <details class="card debug-card">
+      <summary class="card-title">Raw API Response</summary>
       <pre class="debug-pre">${esc(JSON.stringify(q.data, null, 2))}</pre>
-    </div>`;
+    </details>`;
 }
 
 // ═══════════════════════════════════════════════════════════════
