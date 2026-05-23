@@ -73,6 +73,14 @@ function scoreGrowthFactor(val, steps) {
 // Factor threshold tables
 // ---------------------------------------------------------------------------
 
+// IMPORTANT CONVENTIONS: does not have to be 5 '[bound, score]' pairs
+// VALUE_STEPS arrays must end with [Infinity, score]. 
+//   thresholdScale() filters out the Infinity entry when building bound labels and 
+//   assumes there's exactly one more score than bound.
+// GROWTH_STEPS arrays must NOT include an Infinity entry. 
+//   thresholdScale() prepends a hardcoded else → 5 cell (matching 
+//   scoreGrowthFactor's scoring.js:65-70 hardcoded return 5)
+
 const VALUE_STEPS = {
   pe:  [[10, 95], [15, 75], [25, 50], [40, 25], [Infinity, 5]],
   pb:  [[1, 95],  [2, 75],  [4, 50],  [7, 25],  [Infinity, 5]],
