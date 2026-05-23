@@ -1500,6 +1500,45 @@ function renderWatchlist() {
 // SETTINGS
 // ═══════════════════════════════════════════════════════════════
 
+// Keys whose raw value is a fraction (0.05 = 5%) rather than a plain number.
+const PCT_FACTOR_KEYS = new Set(['yield', 'eps_fwd', 'eps_hist', 'rev', 'cf', 'bv']);
+
+function formatThresholdBands(key) {
+  const isPct = PCT_FACTOR_KEYS.has(key);
+  const fmt = (b) => {
+    if (!isFinite(b)) return '∞';
+    if (!isPct) return String(b);
+    const pct = b * 100;
+    return `${pct % 1 === 0 ? pct : pct.toFixed(1)}%`;
+  };
+
+  if (VALUE_STEPS[key]) {
+    // Lower raw value → higher score. Bounds are ascending.
+    const bands = [];
+    let prev = null;
+    for (const [bound, score] of VALUE_STEPS[key]) {
+      bands.push({ text: isFinite(bound) ? `< ${fmt(bound)}` : `≥ ${fmt(prev)}`, score });
+      prev = bound;
+    }
+    return bands;
+  }
+  // Higher raw value → higher score. Bounds are descending.
+  const bands = GROWTH_STEPS[key].map(([bound, score]) => ({ text: `≥ ${fmt(bound)}`, score }));
+  bands.push({ text: 'else', score: 5 });
+  return bands;
+}
+
+function thresholdRow({ key, label }) {
+  const bands = formatThresholdBands(key).map(b =>
+    `<span class="threshold-band">${esc(b.text)} <span class="threshold-band-score">→ ${b.score}</span></span>`
+  ).join('');
+  return `
+    <div class="threshold-row">
+      <div class="threshold-label">${esc(label)}</div>
+      <div class="threshold-bands">${bands}</div>
+    </div>`;
+}
+
 function renderSettings() {
   const { settings } = state.data;
   const cfg = settings.scoringConfig;
@@ -1552,6 +1591,29 @@ function renderSettings() {
 
         <div style="margin-top:16px">
           <button class="btn btn-secondary" onclick="resetScoringConfig()">Reset to Defaults</button>
+        </div>
+      </div>
+
+      <div class="card mt-4">
+        <div class="card-title">Scoring Thresholds</div>
+        <div class="form-hint" style="margin-bottom:14px">
+          How each factor's raw value maps to a 0–100 score before weights are applied.
+          Value multiples score higher when lower (cheaper); growth rates and dividend yield
+          score higher when larger.
+        </div>
+
+        <div class="weight-section-label">Value Factors <span style="text-transform:none;letter-spacing:0;font-weight:400;color:var(--muted)">— lower raw → higher score</span></div>
+        ${VALUE_FACTORS.filter(f => VALUE_STEPS[f.key]).map(thresholdRow).join('')}
+
+        <div class="weight-section-label" style="margin-top:14px">Growth Factors <span style="text-transform:none;letter-spacing:0;font-weight:400;color:var(--muted)">— higher raw → higher score (incl. Dividend Yield)</span></div>
+        ${[...VALUE_FACTORS.filter(f => !VALUE_STEPS[f.key]), ...GROWTH_FACTORS].map(thresholdRow).join('')}
+
+        <div class="dev-note">
+          <strong>Developer note:</strong> these threshold tables are hardcoded in
+          <code>scoring.js</code> as <code>VALUE_STEPS</code> and <code>GROWTH_STEPS</code>
+          (lines ~76–90). Edit those arrays to tune the bands for your own use — each entry
+          is a <code>[bound, score]</code> pair. Existing watchlist snapshots keep the scores
+          they were captured with; click <em>Refresh</em> on a row to re-score with new thresholds.
         </div>
       </div>
 

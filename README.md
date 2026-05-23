@@ -103,6 +103,7 @@ Each individual stock's dot reflects the scoring weights that were active **when
 ### Settings
 
 - **Scoring Weights** — every Value and Growth factor has a 0–3× slider and an enable toggle. Disabled or zero-weight factors are excluded from the average. A `Custom` badge appears when any weight differs from the defaults.
+- **Scoring Thresholds** — a read-only reference showing how each factor's raw value maps to a 0–100 score. Value multiples (P/E, P/B, etc.) score higher when lower; growth rates and dividend yield score higher when larger. Bands are fixed in the app — to tune them, edit `VALUE_STEPS` / `GROWTH_STEPS` in `scoring.js` (see the developer note at the bottom of the section).
 - **General** — rename the app (shows in the sidebar logo)
 - **Data** — export your watchlist (including snapshots) as JSON, or import a backup. Import replaces all current data.
 
@@ -120,7 +121,7 @@ Each stock is scored on 10 factors split between Value and Growth:
 | P/CF Ratio | Cash Flow Growth |
 | Dividend Yield | Book Value Growth |
 
-Each factor is mapped to a 0–100 score against fixed thresholds (e.g. P/E < 10 → 95, P/E 10–15 → 75, ...). The Value Score and Growth Score are weighted averages of their 5 factors. **Net Score = Growth − Value**.
+Each factor is mapped to a 0–100 score against fixed thresholds (e.g. P/E < 10 → 95, P/E 10–15 → 75, ...). The full threshold tables for every factor are visible on the **Settings** page under *Scoring Thresholds*. The Value Score and Growth Score are weighted averages of their 5 factors. **Net Score = Growth − Value**.
 
 - **Net > +15** → Growth
 - **−15 to +15** → Blend
