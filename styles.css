@@ -710,6 +710,13 @@ textarea { resize: vertical; min-height: 72px; }
 }
 
 /* ── Weight column input (Watchlist table) ── */
+.weight-cell {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 1px;
+  line-height: 1.1;
+}
 .weight-input {
   width: 56px;
   padding: 3px 6px;
@@ -720,13 +727,10 @@ textarea { resize: vertical; min-height: 72px; }
 .weight-input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
 .weight-input { -moz-appearance: textfield; }
 .weight-pct {
-  display: inline-block;
-  margin-left: 6px;
-  font-size: 11.5px;
+  display: block;
+  font-size: 10.5px;
   color: var(--muted);
   font-family: 'SF Mono', 'Fira Code', Consolas, monospace;
-  min-width: 38px;
-  text-align: right;
 }
 
 /* ── List membership checkboxes (Add to Lists modal) ── */

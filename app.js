@@ -1465,11 +1465,13 @@ function renderWatchlist() {
                     </td>
                     <td>${esc(s.name || '—')}</td>
                     <td class="text-right nowrap">
-                      <input class="weight-input font-mono" type="number" min="0" step="0.1"
-                        value="${esc(wStr)}"
-                        onclick="event.stopPropagation()"
-                        onchange="setStockWeight('${esc(activeList.id)}','${esc(s.ticker)}',this.value)">
-                      <span class="weight-pct">${esc(pctStr)}</span>
+                      <span class="weight-cell">
+                        <input class="weight-input font-mono" type="number" min="0" step="0.1"
+                          value="${esc(wStr)}"
+                          onclick="event.stopPropagation()"
+                          onchange="setStockWeight('${esc(activeList.id)}','${esc(s.ticker)}',this.value)">
+                        <span class="weight-pct">${esc(pctStr)}</span>
+                      </span>
                     </td>
                     <td>${styleHtml}</td>
                     <td>${sizeHtml}</td>
