@@ -8,13 +8,18 @@ A single-page app that scores stocks on Value and Growth dimensions, plots them 
 
 | File | Purpose |
 |---|---|
-| `index.html` | Shell. Loads `styles.css`, `scoring.js`, `app.js`, and `marked.js` (CDN, for the help modal). |
+| `index.html` | Shell. PWA meta tags, manifest link, service-worker registration. Loads `styles.css`, `scoring.js`, `app.js`, and `marked.js` (CDN, for the help modal). |
 | `styles.css` | Full design system. CSS variables in `:root`. No external dependencies. |
 | `scoring.js` | **Pure** scoring engine — factor definitions, threshold tables, weight handling, `computeScores()`. Zero DOM dependencies. Loaded before `app.js`. |
-| `app.js` | Everything else — state, routing, page renders, modals, watchlist actions, style-box rendering. |
-| `server.js` | ~60-line Express server. Serves static files and exposes `GET /api/quote/:ticker`. In-memory 5-minute cache. |
-| `package.json` | ESM, three dependencies: `express`, `cors`, `yahoo-finance2`. |
-| `README.md` | End-user instructions. |
+| `app.js` | Everything else — state, routing, page renders, modals, watchlist actions, style-box rendering. Top-of-file `API_BASE` constant points fetches at the Cloudflare Worker when deployed; local dev (`localhost`) keeps relative `/api/...`. |
+| `server.js` | Express server for **local dev**. Serves static files and exposes `GET /api/quote/:ticker`. In-memory 5-minute cache. |
+| `worker/worker.js` | Cloudflare Worker that mirrors `server.js` for **static deploys** (GitHub Pages). Same `GET /api/quote/:ticker` contract. Handles Yahoo crumb/cookie + edge cache. |
+| `worker/wrangler.toml` | Wrangler config for the Worker. `wrangler deploy` from `worker/` publishes it. |
+| `manifest.json` | PWA web app manifest — name, icons, theme color, display mode. |
+| `service-worker.js` | Network-first cache for the app shell. Live `/api/quote/*` requests are passed through (never cached). Bump `CACHE_VERSION` to force eviction. |
+| `icons/icon.svg` | Single SVG icon used for favicon, apple-touch-icon, and manifest. Placeholder 3×3 colored grid — swap with real artwork when you have it. |
+| `package.json` | ESM, three dependencies: `express`, `cors`, `yahoo-finance2`. (Dev only; the Worker has no `node_modules`.) |
+| `README.md` | End-user instructions + deploy steps. |
 | `PLAN.md` | Original build plan. Phases 1–6 complete. |
 
 ---

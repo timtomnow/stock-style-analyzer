@@ -1,0 +1,19 @@
+{
+  "name": "Stock Style Analyzer",
+  "short_name": "Style Box",
+  "description": "Score stocks on Value and Growth, plot them on a 3×3 style box, and compare watchlists.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#fafafa",
+  "theme_color": "#2563eb",
+  "icons": [
+    {
+      "src": "icons/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

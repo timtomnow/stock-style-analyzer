@@ -6,6 +6,19 @@
 
 const STORAGE_KEY = 'stock_analyzer_v1';
 
+// ── API endpoint ────────────────────────────────────────────────
+// Local dev (`npm start`) serves the Express proxy on the same origin → leave as ''.
+// Static hosting (GitHub Pages, etc.) needs a separate proxy. Paste your
+// Cloudflare Worker URL here, e.g. 'https://stock-style-api.YOUR-SUBDOMAIN.workers.dev'.
+// No trailing slash.
+const API_BASE = '';
+
+function apiUrl(path) {
+  const isLocal = location.hostname === 'localhost' || location.hostname === '127.0.0.1';
+  const base = (!isLocal && API_BASE) ? API_BASE : '';
+  return base + path;
+}
+
 // Maps sub-pages to their parent sidebar page for active highlighting
 const SIDEBAR_MAP = {};
 
@@ -635,7 +648,7 @@ async function fetchTicker() {
   resultEl.innerHTML = `<div class="card" style="margin-top:16px"><p style="color:var(--muted);padding:20px 0;text-align:center">Loading ${esc(ticker)}…</p></div>`;
 
   try {
-    const res = await fetch(`/api/quote/${encodeURIComponent(ticker)}`);
+    const res = await fetch(apiUrl(`/api/quote/${encodeURIComponent(ticker)}`));
     const json = await res.json();
     if (!json.ok) throw new Error(json.error || 'Unknown error');
     currentQuote = { ticker: json.ticker, data: json.data, fetchedAt: new Date().toISOString() };
@@ -1241,7 +1254,7 @@ async function refreshWatchlistStock(ticker) {
   if (!stock) return;
   showToast(`Refreshing ${ticker}…`);
   try {
-    const res = await fetch(`/api/quote/${encodeURIComponent(ticker)}`);
+    const res = await fetch(apiUrl(`/api/quote/${encodeURIComponent(ticker)}`));
     const json = await res.json();
     if (!json.ok) throw new Error(json.error || 'Fetch failed');
     const cfg = state.data.settings.scoringConfig;
@@ -1503,39 +1516,61 @@ function renderWatchlist() {
 // Keys whose raw value is a fraction (0.05 = 5%) rather than a plain number.
 const PCT_FACTOR_KEYS = new Set(['yield', 'eps_fwd', 'eps_hist', 'rev', 'cf', 'bv']);
 
-function formatThresholdBands(key) {
+// Returns { bounds, scores } with the x-axis ordered ascending by raw value.
+// For VALUE factors this matches the natural order in VALUE_STEPS
+// (leftmost segment = cheapest = highest score). For GROWTH factors the
+// underlying GROWTH_STEPS list is descending by bound, so it gets reversed
+// and a leading "else → 5" segment is prepended for raw values below the
+// lowest threshold. There are always scores.length === bounds.length + 1.
+function thresholdScale(key) {
   const isPct = PCT_FACTOR_KEYS.has(key);
   const fmt = (b) => {
-    if (!isFinite(b)) return '∞';
     if (!isPct) return String(b);
     const pct = b * 100;
     return `${pct % 1 === 0 ? pct : pct.toFixed(1)}%`;
   };
 
   if (VALUE_STEPS[key]) {
-    // Lower raw value → higher score. Bounds are ascending.
-    const bands = [];
-    let prev = null;
-    for (const [bound, score] of VALUE_STEPS[key]) {
-      bands.push({ text: isFinite(bound) ? `< ${fmt(bound)}` : `≥ ${fmt(prev)}`, score });
-      prev = bound;
-    }
-    return bands;
+    const steps = VALUE_STEPS[key];
+    return {
+      bounds: steps.filter(([b]) => isFinite(b)).map(([b]) => fmt(b)),
+      scores: steps.map(([, s]) => s),
+    };
   }
-  // Higher raw value → higher score. Bounds are descending.
-  const bands = GROWTH_STEPS[key].map(([bound, score]) => ({ text: `≥ ${fmt(bound)}`, score }));
-  bands.push({ text: 'else', score: 5 });
-  return bands;
+  const reversed = [...GROWTH_STEPS[key]].reverse();
+  return {
+    bounds: reversed.map(([b]) => fmt(b)),
+    scores: [5, ...reversed.map(([, s]) => s)],
+  };
+}
+
+function scoreBucket(s) {
+  if (s >= 90) return 'excellent';
+  if (s >= 65) return 'good';
+  if (s >= 35) return 'neutral';
+  if (s >= 15) return 'poor';
+  return 'bad';
 }
 
 function thresholdRow({ key, label }) {
-  const bands = formatThresholdBands(key).map(b =>
-    `<span class="threshold-band">${esc(b.text)} <span class="threshold-band-score">→ ${b.score}</span></span>`
+  const { bounds, scores } = thresholdScale(key);
+  const cellPct = 100 / scores.length;
+
+  const boundLabels = bounds.map((b, i) =>
+    `<span class="threshold-bound-label" style="left:${(cellPct * (i + 1)).toFixed(4)}%">${esc(b)}</span>`
   ).join('');
+
+  const scoreCells = scores.map(s =>
+    `<div class="threshold-score-cell" data-bucket="${scoreBucket(s)}">${s}</div>`
+  ).join('');
+
   return `
     <div class="threshold-row">
       <div class="threshold-label">${esc(label)}</div>
-      <div class="threshold-bands">${bands}</div>
+      <div class="threshold-scale">
+        <div class="threshold-bounds-axis">${boundLabels}</div>
+        <div class="threshold-line">${scoreCells}</div>
+      </div>
     </div>`;
 }
 

@@ -2,7 +2,7 @@
 
 > Score stocks on Value and Growth dimensions using a 3×3 style box framework. Organize stocks into multiple named watchlists, assign portfolio weights, and visualize the aggregate style of a built portfolio.
 
-## How to Run
+## How to Run (Local)
 
 ```bash
 # 1. Install dependencies (first time only)
@@ -16,6 +16,31 @@ open http://localhost:3000
 ```
 
 An internet connection is required — stock fundamentals are fetched from Yahoo Finance through the local server.
+
+---
+
+## Deploying to GitHub Pages (with Cloudflare Worker proxy)
+
+The frontend is plain static files, but the browser can't fetch Yahoo Finance directly (CORS). For a free public deploy:
+
+**1. Publish the Cloudflare Worker** that mirrors the local Node proxy.
+
+```bash
+npm install -g wrangler   # one-time
+cd worker
+wrangler login            # browser opens → authorize your Cloudflare account
+wrangler deploy           # prints the live URL, e.g. https://stock-style-api.YOU.workers.dev
+```
+
+**2. Point the frontend at the Worker.** Open [app.js](app.js), find `const API_BASE = ''` near the top, and paste in the Worker URL (no trailing slash). Local dev still works — when `location.hostname` is `localhost` the app ignores `API_BASE` and uses the Express proxy on the same origin.
+
+**3. Push the repo and enable Pages.** In GitHub: *Settings → Pages → Build and deployment → Source: Deploy from a branch → `main` / root → Save*. Wait ~1 minute and visit `https://<your-username>.github.io/<repo-name>/`.
+
+**4. Install as a PWA.**
+- **iOS**: Safari → Share → *Add to Home Screen*.
+- **Android/Chrome desktop**: address-bar install icon, or *Menu → Install app*.
+
+The included service worker caches the app shell on first visit, so the UI keeps working offline (live quote fetches still need a connection).
 
 ---
 

@@ -638,24 +638,65 @@ textarea { resize: vertical; min-height: 72px; }
   display: grid;
   grid-template-columns: 160px 1fr;
   align-items: center;
-  gap: 12px;
-  padding: 8px 0;
+  gap: 16px;
+  padding: 10px 0;
   border-bottom: 1px solid var(--border);
 }
 .threshold-row:last-of-type { border-bottom: none; }
 .threshold-label { font-size: 13.5px; font-weight: 500; }
-.threshold-bands { display: flex; flex-wrap: wrap; gap: 6px; }
-.threshold-band {
-  font-family: 'SF Mono', 'Fira Code', Consolas, monospace;
-  font-size: 11.5px;
-  padding: 2px 8px;
-  border-radius: 4px;
-  background: var(--sidebar-bg);
-  color: var(--muted);
-  border: 1px solid var(--border);
-  white-space: nowrap;
+
+.threshold-scale { position: relative; width: 100%; }
+
+.threshold-bounds-axis {
+  position: relative;
+  height: 18px;
+  margin-bottom: 2px;
 }
-.threshold-band-score { color: var(--text); font-weight: 600; }
+.threshold-bound-label {
+  position: absolute;
+  bottom: 0;
+  transform: translateX(-50%);
+  font-family: 'SF Mono', 'Fira Code', Consolas, monospace;
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+  padding-bottom: 5px;
+}
+.threshold-bound-label::after {
+  content: '';
+  position: absolute;
+  bottom: 0;
+  left: 50%;
+  width: 1px;
+  height: 4px;
+  background: var(--text);
+  opacity: 0.45;
+}
+
+.threshold-line {
+  display: flex;
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  overflow: hidden;
+}
+.threshold-score-cell {
+  flex: 1;
+  padding: 5px 0;
+  text-align: center;
+  font-family: 'SF Mono', 'Fira Code', Consolas, monospace;
+  font-size: 12px;
+  font-weight: 600;
+  border-right: 1px solid var(--border);
+  min-width: 0;
+}
+.threshold-score-cell:last-child { border-right: none; }
+
+.threshold-score-cell[data-bucket="excellent"] { background: rgba(34,197,94,0.22);  color: #166534; }
+.threshold-score-cell[data-bucket="good"]      { background: rgba(132,204,22,0.22); color: #3f6212; }
+.threshold-score-cell[data-bucket="neutral"]   { background: rgba(234,179,8,0.22);  color: #854d0e; }
+.threshold-score-cell[data-bucket="poor"]      { background: rgba(249,115,22,0.22); color: #9a3412; }
+.threshold-score-cell[data-bucket="bad"]       { background: rgba(239,68,68,0.22);  color: #991b1b; }
 
 .dev-note {
   margin-top: 18px;
