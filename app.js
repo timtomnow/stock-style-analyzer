@@ -11,7 +11,7 @@ const STORAGE_KEY = 'stock_analyzer_v1';
 // Static hosting (GitHub Pages, etc.) needs a separate proxy. Paste your
 // Cloudflare Worker URL here, e.g. 'https://stock-style-api.YOUR-SUBDOMAIN.workers.dev'.
 // No trailing slash.
-const API_BASE = '';
+const API_BASE = 'https://stock-style-api.oilers-score-proxy.workers.dev';
 
 function apiUrl(path) {
   const isLocal = location.hostname === 'localhost' || location.hostname === '127.0.0.1';
