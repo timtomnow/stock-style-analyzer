@@ -288,3 +288,62 @@ function computeScores(data, config = {}, options = {}) {
 
   return { valueScore, growthScore, netScore, style, size: getSize(mktCap), factors };
 }
+
+// ---------------------------------------------------------------------------
+// Aggregate scoring across a list of stocks (portfolio view).
+//
+// entries: [{ ticker, snapshot, weight }]   weight = raw user input, any scale
+//
+// Stocks with null valueScore or growthScore are skipped and the remaining
+// weights are renormalized to sum to 1. Size is a weighted average over a
+// numeric size index (large=0, mid=1, small=2) rounded back to a label.
+// ---------------------------------------------------------------------------
+function computeAggregateScores(entries) {
+  const total = (entries || []).length;
+  const valid = (entries || []).filter(e =>
+    e && e.snapshot &&
+    e.snapshot.valueScore != null &&
+    e.snapshot.growthScore != null
+  );
+
+  if (valid.length === 0) {
+    return { valueScore: null, growthScore: null, netScore: null,
+             style: 'Unknown', size: 'unknown',
+             included: 0, total, normalizedWeights: [] };
+  }
+
+  let totalW = 0;
+  for (const e of valid) totalW += Math.max(0, Number(e.weight) || 0);
+  // If all weights are zero or missing, fall back to equal-weight.
+  const useEqual = totalW === 0;
+  const eachEqual = 1 / valid.length;
+
+  const SIZE_IDX = { large: 0, mid: 1, small: 2 };
+  const SIZE_NAMES = ['large', 'mid', 'small'];
+
+  let v = 0, g = 0, sIdxSum = 0, sIdxWeight = 0;
+  const normalizedWeights = [];
+  for (const e of valid) {
+    const w = useEqual
+      ? eachEqual
+      : Math.max(0, Number(e.weight) || 0) / totalW;
+    normalizedWeights.push(w);
+    v += e.snapshot.valueScore  * w;
+    g += e.snapshot.growthScore * w;
+    if (e.snapshot.size && SIZE_IDX[e.snapshot.size] != null) {
+      sIdxSum    += SIZE_IDX[e.snapshot.size] * w;
+      sIdxWeight += w;
+    }
+  }
+
+  const netScore = g - v;
+  const style    = netScore > 15 ? 'Growth' : netScore < -15 ? 'Value' : 'Blend';
+  const size     = sIdxWeight > 0
+    ? SIZE_NAMES[Math.max(0, Math.min(2, Math.round(sIdxSum / sIdxWeight)))]
+    : 'unknown';
+
+  return {
+    valueScore: v, growthScore: g, netScore, style, size,
+    included: valid.length, total, normalizedWeights,
+  };
+}

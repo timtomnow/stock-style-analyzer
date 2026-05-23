@@ -42,13 +42,71 @@ let watchlistSort = { col: 'net', dir: 'desc' };
 
 function defaultData() {
   return {
-    version: 1,
-    stocks: [],   // saved/watchlisted stocks
+    version: 2,
+    stocks: [],   // master pool of saved stocks (shape: { ticker, name, addedAt, snapshot })
+    lists: [],   // populated by migrateData() with a single default list
+    activeListId: null,
     settings: {
       appName: 'Stock Style Analyzer',
       scoringConfig: defaultScoringConfig(),
     },
   };
+}
+
+// Centralized migration — used by both loadData() and triggerImport() so
+// older exports (pre-V2, no `lists`) work as imports too.
+function migrateData(data) {
+  data = data || defaultData();
+  if (!data.stocks) data.stocks = [];
+  for (const s of data.stocks) {
+    if (!('snapshot' in s)) s.snapshot = null;
+  }
+
+  if (!data.settings) data.settings = {};
+  const defaultCfg = defaultScoringConfig();
+  const cfg = data.settings.scoringConfig;
+  if (!cfg || !cfg.weights || !cfg.enabled) {
+    data.settings.scoringConfig = defaultCfg;
+  } else {
+    for (const k of Object.keys(defaultCfg.weights)) {
+      if (cfg.weights[k] == null) cfg.weights[k] = defaultCfg.weights[k];
+      if (cfg.enabled[k] == null) cfg.enabled[k] = defaultCfg.enabled[k];
+    }
+  }
+
+  // V2: multiple watchlists. If `lists` is absent or empty, wrap any existing
+  // stocks into a single default list named "Watchlist".
+  if (!Array.isArray(data.lists) || data.lists.length === 0) {
+    const list = {
+      id: uuid(),
+      name: 'Watchlist',
+      createdAt: new Date().toISOString(),
+      tickers: data.stocks.map(s => ({
+        ticker: s.ticker,
+        weight: 1,
+        addedAt: s.addedAt || new Date().toISOString(),
+      })),
+    };
+    data.lists = [list];
+    data.activeListId = list.id;
+  }
+
+  for (const list of data.lists) {
+    if (!list.id) list.id = uuid();
+    if (!list.createdAt) list.createdAt = new Date().toISOString();
+    if (!Array.isArray(list.tickers)) list.tickers = [];
+    for (const t of list.tickers) {
+      if (t.weight == null) t.weight = 1;
+      if (!t.addedAt) t.addedAt = new Date().toISOString();
+    }
+  }
+
+  if (!data.activeListId || !data.lists.some(l => l.id === data.activeListId)) {
+    data.activeListId = data.lists[0].id;
+  }
+
+  data.version = 2;
+  return data;
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -58,27 +116,9 @@ function defaultData() {
 function loadData() {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    state.data = raw ? JSON.parse(raw) : defaultData();
-    // migrate: ensure stocks array exists
-    if (!state.data.stocks) state.data.stocks = [];
-    // migrate: ensure every stock has a snapshot field (pre-Phase 6 entries have none)
-    for (const s of state.data.stocks) {
-      if (!('snapshot' in s)) s.snapshot = null;
-    }
-    // migrate: ensure scoringConfig exists, and fill in any missing factor keys
-    if (!state.data.settings) state.data.settings = {};
-    const defaultCfg = defaultScoringConfig();
-    const cfg = state.data.settings.scoringConfig;
-    if (!cfg || !cfg.weights || !cfg.enabled) {
-      state.data.settings.scoringConfig = defaultCfg;
-    } else {
-      for (const k of Object.keys(defaultCfg.weights)) {
-        if (cfg.weights[k] == null) cfg.weights[k] = defaultCfg.weights[k];
-        if (cfg.enabled[k] == null) cfg.enabled[k] = defaultCfg.enabled[k];
-      }
-    }
+    state.data = migrateData(raw ? JSON.parse(raw) : defaultData());
   } catch (e) {
-    state.data = defaultData();
+    state.data = migrateData(defaultData());
   }
 }
 
@@ -109,7 +149,7 @@ function triggerImport() {
     const reader = new FileReader();
     reader.onload = ev => {
       try {
-        state.data = JSON.parse(ev.target.result);
+        state.data = migrateData(JSON.parse(ev.target.result));
         saveData();
         navigate('dashboard');
         showToast('Data imported', 'success');
@@ -170,6 +210,83 @@ function fmtMktCap(n) {
 }
 
 // ═══════════════════════════════════════════════════════════════
+// WATCHLIST LISTS
+// ═══════════════════════════════════════════════════════════════
+
+function getActiveList() {
+  const lists = state.data.lists;
+  return lists.find(l => l.id === state.data.activeListId) || lists[0];
+}
+
+function getListsForTicker(ticker) {
+  return state.data.lists.filter(l => l.tickers.some(t => t.ticker === ticker));
+}
+
+function createList(name) {
+  const list = {
+    id: uuid(),
+    name,
+    createdAt: new Date().toISOString(),
+    tickers: [],
+  };
+  state.data.lists.push(list);
+  return list;
+}
+
+// Adds a ticker to a list. If the ticker isn't yet in the master stocks pool,
+// creates it (with optional name/snapshot). Returns true if anything changed.
+function addTickerToList(listId, ticker, opts = {}) {
+  const list = state.data.lists.find(l => l.id === listId);
+  if (!list) return false;
+  if (list.tickers.some(t => t.ticker === ticker)) return false;
+  list.tickers.push({
+    ticker,
+    weight: opts.weight ?? 1,
+    addedAt: new Date().toISOString(),
+  });
+  if (!state.data.stocks.some(s => s.ticker === ticker)) {
+    state.data.stocks.push({
+      ticker,
+      name: opts.name ?? ticker,
+      addedAt: new Date().toISOString(),
+      snapshot: opts.snapshot ?? null,
+    });
+  }
+  return true;
+}
+
+// Removes a ticker from a list. If the ticker is no longer in any list,
+// also drops it from the master stocks pool to avoid orphan snapshots.
+function removeTickerFromList(listId, ticker) {
+  const list = state.data.lists.find(l => l.id === listId);
+  if (!list) return;
+  list.tickers = list.tickers.filter(t => t.ticker !== ticker);
+  const stillUsed = state.data.lists.some(l => l.tickers.some(t => t.ticker === ticker));
+  if (!stillUsed) {
+    state.data.stocks = state.data.stocks.filter(s => s.ticker !== ticker);
+  }
+}
+
+function setActiveList(listId) {
+  if (!state.data.lists.some(l => l.id === listId)) return;
+  state.data.activeListId = listId;
+  saveData();
+  navigate('watchlist');
+}
+
+function setStockWeight(listId, ticker, weightStr) {
+  const list = state.data.lists.find(l => l.id === listId);
+  if (!list) return;
+  const entry = list.tickers.find(t => t.ticker === ticker);
+  if (!entry) return;
+  let w = parseFloat(weightStr);
+  if (isNaN(w) || w < 0) w = 0;
+  entry.weight = w;
+  saveData();
+  navigate('watchlist');
+}
+
+// ═══════════════════════════════════════════════════════════════
 // WATCHLIST SNAPSHOTS
 // ═══════════════════════════════════════════════════════════════
 
@@ -212,6 +329,7 @@ function sortStocks(stocks, col, dir) {
       case 'value':     return s.snapshot?.valueScore;
       case 'growth':    return s.snapshot?.growthScore;
       case 'net':       return s.snapshot?.netScore;
+      case 'weight':    return s.weight;
       case 'period':    return s.snapshot?.periodLabel;
       case 'refreshed': return s.snapshot?.fetchedAt;
       default:          return 0;
@@ -406,8 +524,12 @@ function renderDashboard() {
 
       <div class="stat-grid">
         <div class="stat-card">
-          <div class="stat-label">Watchlist</div>
+          <div class="stat-label">Stocks</div>
           <div class="stat-value">${stocks.length}</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Lists</div>
+          <div class="stat-value">${state.data.lists.length}</div>
         </div>
         <div class="stat-card">
           <div class="stat-label">Scored</div>
@@ -562,8 +684,10 @@ function lookupTicker(ticker) {
 }
 
 // Renders one or more stock dots on the 3×3 style box.
-// `stocks` is an array of { ticker, scores, color? }.
+// `stocks` is an array of { ticker, scores, color?, weight? }.
 // Options: { width=240 }  — height tracks width (square).
+// If any stock has a positive `weight`, dot radii scale by sqrt(weight/equalShare)
+// so dot area visually tracks the stock's share of the portfolio.
 function renderStyleBox(stocks, options = {}) {
   const W = options.width ?? 240;
   const H = W;
@@ -619,16 +743,31 @@ function renderStyleBox(stocks, options = {}) {
       </div>`;
   }
 
+  // Per-dot radius: scale by weight share if any positive weights are present.
+  const weights = valid.map(s => Math.max(0, Number(s.weight) || 0));
+  const totalWeight = weights.reduce((a, b) => a + b, 0);
+  const hasWeights = totalWeight > 0 && weights.some(w => w !== weights[0]);
+  const equalFrac = 1 / valid.length;
+  const dotRadii = valid.map((_, i) => {
+    if (!hasWeights) return R;
+    const frac = weights[i] / totalWeight;
+    const ratio = frac / equalFrac;   // 1.0 = equal weight
+    const scaled = R * Math.sqrt(Math.max(0.05, ratio));
+    return Math.max(R * 0.5, Math.min(R * 1.9, scaled));
+  });
+  const maxR = Math.max(R, ...dotRadii);
+
   // Compute (x, y) and assigned color for each dot.
   const positions = valid.map((s, i) => {
     const { netScore, size, style } = s.scores;
+    const r = dotRadii[i];
     const xRaw = ((netScore + 100) / 200) * W;
-    const x = Math.max(R + 2, Math.min(W - R - 2, xRaw));
+    const x = Math.max(r + 2, Math.min(W - r - 2, xRaw));
     const y = size === 'large' ? cellH * 0.5
             : size === 'small' ? cellH * 2.5
             : cellH * 1.5;
     return {
-      x, y,
+      x, y, r,
       ticker: s.ticker,
       style,
       size,
@@ -648,7 +787,7 @@ function renderStyleBox(stocks, options = {}) {
       if (visited.has(j)) continue;
       const dx = positions[i].x - positions[j].x;
       const dy = positions[i].y - positions[j].y;
-      if (Math.hypot(dx, dy) < R * 2) {
+      if (Math.hypot(dx, dy) < maxR * 2) {
         cluster.push(j);
         visited.add(j);
       }
@@ -659,18 +798,19 @@ function renderStyleBox(stocks, options = {}) {
   }
 
   const dotsAndLabels = positions.map((p, i) => {
+    const r = p.r;
     // Fall back to opposite side if the cluster-assigned side would clip a box edge.
     const labelWidth = p.ticker.length * labelFont * 0.6 + 6;
-    const fitsRight  = p.x + R + labelWidth <= W;
-    const fitsLeft   = p.x - R - labelWidth >= 0;
+    const fitsRight  = p.x + r + labelWidth <= W;
+    const fitsLeft   = p.x - r - labelWidth >= 0;
     const side = sides[i] === 'right'
       ? (fitsRight ? 'right' : 'left')
       : (fitsLeft  ? 'left'  : 'right');
-    const labelX = side === 'right' ? p.x + R + 4 : p.x - R - 4;
+    const labelX = side === 'right' ? p.x + r + 4 : p.x - r - 4;
     const anchor = side === 'right' ? 'start' : 'end';
     const tip = `${p.ticker} — ${p.size}-cap ${p.style} (net ${p.netScore >= 0 ? '+' : ''}${Math.round(p.netScore)})`;
     return `
-      <circle class="stylebox-dot" data-ticker="${esc(p.ticker)}" data-r="${R}" cx="${p.x}" cy="${p.y}" r="${R}" fill="${p.color}" stroke="#ffffff" stroke-width="2.5">
+      <circle class="stylebox-dot" data-ticker="${esc(p.ticker)}" data-r="${r}" cx="${p.x}" cy="${p.y}" r="${r}" fill="${p.color}" stroke="#ffffff" stroke-width="2.5">
         <title>${esc(tip)}</title>
       </circle>
       <text class="stylebox-label" data-ticker="${esc(p.ticker)}" x="${labelX}" y="${p.y + 4}" text-anchor="${anchor}" font-size="${labelFont}" font-weight="700" fill="${p.color}" style="paint-order:stroke;stroke:#ffffff;stroke-width:3px;stroke-linejoin:round">${esc(p.ticker)}</text>`;
@@ -830,7 +970,16 @@ function renderQuoteResult(q) {
     ['Beta',            fmtNum(ks.beta?.raw ?? ks.beta)],
   ];
 
-  const inWatchlist = state.data.stocks.some(s => s.ticker === q.ticker);
+  const ticketLists = getListsForTicker(q.ticker);
+  const inSome      = ticketLists.length > 0;
+  const listsBtn = inSome
+    ? `<button class="btn btn-secondary" onclick="showAddToListsModal('${esc(q.ticker)}')">In ${ticketLists.length} list${ticketLists.length !== 1 ? 's' : ''} ▾</button>`
+    : `<button class="btn btn-primary" onclick="showAddToListsModal('${esc(q.ticker)}')">+ Add to Watchlist</button>`;
+  const listsBadges = inSome
+    ? `<div style="margin-top:6px;display:flex;gap:4px;flex-wrap:wrap;justify-content:flex-end">
+         ${ticketLists.map(l => `<span class="badge neutral">${esc(l.name)}</span>`).join('')}
+       </div>`
+    : '';
   const periodOpts  = buildPeriodOptions(d);
   const selectedOpt = periodOpts.find(o => o.offset === currentPeriod) || periodOpts[0];
   // If the previously-selected offset is no longer in the list (e.g. after a re-fetch),
@@ -845,9 +994,10 @@ function renderQuoteResult(q) {
           <div style="color:var(--muted);font-size:13px">${esc(name)}</div>
           <div style="color:var(--muted);font-size:12px;margin-top:3px">Fetched ${fmtDate(q.fetchedAt)}</div>
         </div>
-        ${inWatchlist
-          ? `<button class="btn btn-secondary" onclick="removeFromWatchlist('${esc(q.ticker)}')">Remove from Watchlist</button>`
-          : `<button class="btn btn-primary" onclick="addToWatchlist()">+ Add to Watchlist</button>`}
+        <div>
+          ${listsBtn}
+          ${listsBadges}
+        </div>
       </div>
 
       <div class="period-selector">
@@ -903,37 +1053,187 @@ function renderQuoteResult(q) {
 // WATCHLIST ACTIONS
 // ═══════════════════════════════════════════════════════════════
 
-function addToWatchlist() {
-  if (!currentQuote) return;
-  const { ticker, data } = currentQuote;
-  if (state.data.stocks.some(s => s.ticker === ticker)) {
-    showToast(`${ticker} already in watchlist`);
-    return;
-  }
-  const name = data.price?.longName || data.price?.shortName || ticker;
+// Build a fresh snapshot for the current ticker, using current scoring weights
+// and the in-flight period. Used when adding a Lookup-page ticker to lists.
+function snapshotFromCurrentQuote() {
+  if (!currentQuote) return null;
   const cfg = state.data.settings.scoringConfig;
-  const scores = computeScores(data, cfg, { periodOffset: currentPeriod });
-  state.data.stocks.push({
-    ticker,
-    name,
-    addedAt: new Date().toISOString(),
-    snapshot: makeSnapshot(scores, currentPeriod, cfg, data),
-  });
-  saveData();
-  // Re-render just the result section to update the button
-  document.getElementById('lookup-result').innerHTML = renderQuoteResult(currentQuote);
-  showToast(`${ticker} added to watchlist`, 'success');
+  const scores = computeScores(currentQuote.data, cfg, { periodOffset: currentPeriod });
+  return makeSnapshot(scores, currentPeriod, cfg, currentQuote.data);
 }
 
-function removeFromWatchlist(ticker) {
-  state.data.stocks = state.data.stocks.filter(s => s.ticker !== ticker);
-  saveData();
-  if (state.page === 'lookup' && currentQuote?.ticker === ticker) {
-    document.getElementById('lookup-result').innerHTML = renderQuoteResult(currentQuote);
-  } else {
-    navigate(state.page);
+function showAddToListsModal(ticker) {
+  const q = currentQuote && currentQuote.ticker === ticker ? currentQuote : null;
+  const name = q ? (q.data.price?.longName || q.data.price?.shortName || ticker) : ticker;
+  const memberships = new Set(getListsForTicker(ticker).map(l => l.id));
+  // For a brand-new ticker default to the currently-active list, so quick adds work.
+  if (memberships.size === 0 && state.data.activeListId) {
+    memberships.add(state.data.activeListId);
   }
-  showToast(`${ticker} removed from watchlist`);
+
+  const renderListRows = () => state.data.lists.map(l => {
+    const inList = l.tickers.some(t => t.ticker === ticker);
+    const checked = memberships.has(l.id);
+    return `
+      <label class="list-checkbox-row">
+        <input type="checkbox" data-list-id="${esc(l.id)}" ${checked ? 'checked' : ''}>
+        <span class="list-checkbox-name">${esc(l.name)}</span>
+        <span class="list-checkbox-meta">${l.tickers.length} stock${l.tickers.length !== 1 ? 's' : ''}${inList ? ' · current' : ''}</span>
+      </label>`;
+  }).join('');
+
+  const body = `
+    <div class="form-group">
+      <p style="font-size:13.5px;margin-bottom:10px">
+        Choose lists for <strong>${esc(ticker)}</strong>:
+      </p>
+      <div id="list-checkbox-container">${renderListRows()}</div>
+      <div class="form-hint" style="margin-top:14px">— or create a new list —</div>
+      <div style="display:flex;gap:8px;margin-top:6px">
+        <input type="text" id="new-list-name" placeholder="New list name" style="flex:1"
+          onkeydown="if(event.key==='Enter'){event.preventDefault();createListInModal('${esc(ticker)}')}">
+        <button class="btn btn-secondary" onclick="createListInModal('${esc(ticker)}')">+ Create</button>
+      </div>
+    </div>`;
+
+  showModal('Manage lists', body, () => {
+    const snapshot = snapshotFromCurrentQuote();
+    let added = 0, removed = 0;
+    const boxes = document.querySelectorAll('#list-checkbox-container input[type=checkbox]');
+    for (const cb of boxes) {
+      const listId = cb.dataset.listId;
+      const list = state.data.lists.find(l => l.id === listId);
+      if (!list) continue;
+      const isIn = list.tickers.some(t => t.ticker === ticker);
+      if (cb.checked && !isIn) {
+        addTickerToList(listId, ticker, { name, snapshot });
+        added++;
+      } else if (!cb.checked && isIn) {
+        removeTickerFromList(listId, ticker);
+        removed++;
+      }
+    }
+    saveData();
+    if (state.page === 'lookup') {
+      document.getElementById('lookup-result').innerHTML = renderQuoteResult(currentQuote);
+    } else {
+      navigate(state.page);
+    }
+    const parts = [];
+    if (added)   parts.push(`added to ${added} list${added !== 1 ? 's' : ''}`);
+    if (removed) parts.push(`removed from ${removed} list${removed !== 1 ? 's' : ''}`);
+    if (parts.length) showToast(`${ticker} ${parts.join(', ')}`, 'success');
+    return true;
+  }, 'Save');
+}
+
+function createListInModal(ticker) {
+  const input = document.getElementById('new-list-name');
+  const name = (input?.value || '').trim();
+  if (!name) { showToast('Enter a list name', 'error'); return; }
+  if (state.data.lists.some(l => l.name.toLowerCase() === name.toLowerCase())) {
+    showToast('A list with that name already exists', 'error');
+    return;
+  }
+  const list = createList(name);
+  saveData();
+  const container = document.getElementById('list-checkbox-container');
+  if (container) {
+    container.insertAdjacentHTML('beforeend', `
+      <label class="list-checkbox-row">
+        <input type="checkbox" data-list-id="${esc(list.id)}" checked>
+        <span class="list-checkbox-name">${esc(list.name)}</span>
+        <span class="list-checkbox-meta">0 stocks · new</span>
+      </label>`);
+  }
+  input.value = '';
+  input.focus();
+}
+
+function promptNewList() {
+  showModal('New List', `
+    <div class="form-group">
+      <label>List name</label>
+      <input type="text" id="new-list-input" autofocus placeholder="e.g. Bank Stocks"
+        onkeydown="if(event.key==='Enter'){event.preventDefault();document.getElementById('modal-save').click()}">
+    </div>
+  `, () => {
+    const name = (document.getElementById('new-list-input')?.value || '').trim();
+    if (!name) { showToast('Enter a list name', 'error'); return false; }
+    if (state.data.lists.some(l => l.name.toLowerCase() === name.toLowerCase())) {
+      showToast('A list with that name already exists', 'error');
+      return false;
+    }
+    const list = createList(name);
+    state.data.activeListId = list.id;
+    saveData();
+    navigate('watchlist');
+    showToast(`List "${name}" created`, 'success');
+    return true;
+  }, 'Create');
+}
+
+function promptRenameList(listId) {
+  const list = state.data.lists.find(l => l.id === listId);
+  if (!list) return;
+  showModal('Rename List', `
+    <div class="form-group">
+      <label>List name</label>
+      <input type="text" id="rename-list-input" autofocus value="${esc(list.name)}"
+        onkeydown="if(event.key==='Enter'){event.preventDefault();document.getElementById('modal-save').click()}">
+    </div>
+  `, () => {
+    const name = (document.getElementById('rename-list-input')?.value || '').trim();
+    if (!name) { showToast('Enter a list name', 'error'); return false; }
+    if (state.data.lists.some(l => l.id !== listId && l.name.toLowerCase() === name.toLowerCase())) {
+      showToast('A list with that name already exists', 'error');
+      return false;
+    }
+    list.name = name;
+    saveData();
+    navigate('watchlist');
+    showToast('List renamed', 'success');
+    return true;
+  }, 'Save');
+}
+
+function confirmDeleteList(listId) {
+  const list = state.data.lists.find(l => l.id === listId);
+  if (!list) return;
+  if (state.data.lists.length === 1) {
+    showToast('Cannot delete your only list — create another first', 'error');
+    return;
+  }
+  showConfirm(
+    `Delete "${list.name}"?`,
+    `Stocks only in this list will be removed entirely; stocks also in other lists will remain.`,
+    () => {
+      const tickersInList = list.tickers.map(t => t.ticker);
+      state.data.lists = state.data.lists.filter(l => l.id !== listId);
+      if (state.data.activeListId === listId) {
+        state.data.activeListId = state.data.lists[0].id;
+      }
+      for (const ticker of tickersInList) {
+        const stillUsed = state.data.lists.some(l => l.tickers.some(t => t.ticker === ticker));
+        if (!stillUsed) {
+          state.data.stocks = state.data.stocks.filter(s => s.ticker !== ticker);
+        }
+      }
+      saveData();
+      navigate('watchlist');
+      showToast(`List "${list.name}" deleted`);
+    }
+  );
+}
+
+// Called from a Watchlist row's Remove button — drops the stock from the active list only.
+function removeFromActiveList(ticker) {
+  const list = getActiveList();
+  if (!list) return;
+  removeTickerFromList(list.id, ticker);
+  saveData();
+  navigate('watchlist');
+  showToast(`${ticker} removed from "${list.name}"`);
 }
 
 async function refreshWatchlistStock(ticker) {
@@ -971,36 +1271,72 @@ function setWatchlistSort(col) {
 // ═══════════════════════════════════════════════════════════════
 
 function renderWatchlist() {
-  const { stocks } = state.data;
+  const lists = state.data.lists;
+  const activeList = getActiveList();
+  if (!activeList) {
+    // Shouldn't happen — migration guarantees at least one list.
+    return `<div class="page"><div class="card">No watchlists.</div></div>`;
+  }
 
-  if (stocks.length === 0) {
+  // List selector toolbar (rendered above page content, always visible).
+  const listSelector = `
+    <div class="card list-toolbar">
+      <label for="list-select" class="list-toolbar-label">List</label>
+      <select id="list-select" class="list-select"
+        onchange="setActiveList(this.value)">
+        ${lists.map(l => `
+          <option value="${esc(l.id)}"${l.id === activeList.id ? ' selected' : ''}>
+            ${esc(l.name)} (${l.tickers.length})
+          </option>`).join('')}
+      </select>
+      <div class="list-toolbar-actions">
+        <button class="btn btn-secondary btn-sm" onclick="promptNewList()">+ New</button>
+        <button class="btn btn-secondary btn-sm" onclick="promptRenameList('${esc(activeList.id)}')">Rename</button>
+        <button class="btn btn-ghost btn-sm" style="color:var(--danger)"
+          onclick="confirmDeleteList('${esc(activeList.id)}')"
+          ${lists.length === 1 ? 'disabled' : ''}>Delete</button>
+      </div>
+    </div>`;
+
+  // Resolve list tickers against master stocks pool.
+  const stocksInList = activeList.tickers.map(t => {
+    const stock = state.data.stocks.find(s => s.ticker === t.ticker);
+    return stock ? { ...stock, weight: t.weight } : null;
+  }).filter(Boolean);
+
+  if (stocksInList.length === 0) {
     return `
       <div class="page">
         <div class="page-header">
           <div>
             <div class="page-title">Watchlist</div>
-            <div class="page-subtitle">0 stocks saved</div>
+            <div class="page-subtitle">${esc(activeList.name)} · 0 stocks</div>
           </div>
           <button class="btn btn-primary" onclick="navigate('lookup')">+ Add Stock</button>
         </div>
+        ${listSelector}
         <div class="card">
           <div class="empty-state">
             <div class="empty-state-icon">📋</div>
-            <div class="empty-state-title">No stocks saved yet</div>
-            <div class="empty-state-body">Look up a stock and click "Add to Watchlist".</div>
+            <div class="empty-state-title">"${esc(activeList.name)}" is empty</div>
+            <div class="empty-state-body">Look up a stock and add it to this list.</div>
             <button class="btn btn-primary" onclick="navigate('lookup')">Look Up Stock</button>
           </div>
         </div>
       </div>`;
   }
 
-  // Color is stable per ticker (based on insertion order), independent of sort.
+  // Color is stable per ticker within the active list (insertion order).
   const colorByTicker = {};
-  stocks.forEach((s, i) => { colorByTicker[s.ticker] = colorForIndex(i); });
+  stocksInList.forEach((s, i) => { colorByTicker[s.ticker] = colorForIndex(i); });
 
-  const sorted = sortStocks(stocks, watchlistSort.col, watchlistSort.dir);
+  // Normalized weight % per ticker (for table display).
+  const totalWeight = stocksInList.reduce((s, x) => s + Math.max(0, Number(x.weight) || 0), 0);
+  const pctOf = w => totalWeight > 0 ? ((Math.max(0, Number(w) || 0) / totalWeight) * 100) : (100 / stocksInList.length);
 
-  const plotStocks = stocks
+  const sorted = sortStocks(stocksInList, watchlistSort.col, watchlistSort.dir);
+
+  const plotStocks = stocksInList
     .filter(s => s.snapshot?.netScore != null)
     .map(s => ({
       ticker: s.ticker,
@@ -1010,7 +1346,35 @@ function renderWatchlist() {
         style: s.snapshot.style,
       },
       color: colorByTicker[s.ticker],
+      weight: s.weight,
     }));
+
+  // Aggregate "portfolio" scores using current weights from this list.
+  const aggInput = stocksInList.map(s => ({
+    ticker: s.ticker, snapshot: s.snapshot, weight: s.weight,
+  }));
+  const agg = computeAggregateScores(aggInput);
+
+  // Short label for the aggregate dot — fits inside the box.
+  const aggLabel = activeList.name.length > 10
+    ? activeList.name.slice(0, 9) + '…'
+    : activeList.name;
+  const aggPlot = agg.valueScore != null
+    ? [{ ticker: aggLabel, scores: agg, color: '#111827' }]
+    : [];
+
+  const aggSummary = agg.valueScore == null
+    ? `<div class="form-hint" style="text-align:center;margin-top:4px">No scored stocks yet — refresh rows to populate.</div>`
+    : `
+      <div class="agg-stats">
+        <div><span class="agg-stat-label">Value</span><span class="agg-stat-val">${Math.round(agg.valueScore)}</span></div>
+        <div><span class="agg-stat-label">Growth</span><span class="agg-stat-val">${Math.round(agg.growthScore)}</span></div>
+        <div><span class="agg-stat-label">Net</span><span class="agg-stat-val">${agg.netScore >= 0 ? '+' : ''}${Math.round(agg.netScore)}</span></div>
+        <div><span class="agg-stat-label">Style</span><span class="agg-stat-val">${esc(agg.style)}</span></div>
+      </div>
+      ${agg.included < agg.total
+        ? `<div class="form-hint" style="text-align:center;margin-top:6px">Includes ${agg.included} of ${agg.total} stocks · others have no score yet.</div>`
+        : ''}`;
 
   const arrow = (col) =>
     watchlistSort.col === col ? (watchlistSort.dir === 'desc' ? ' ↓' : ' ↑') : '';
@@ -1024,16 +1388,25 @@ function renderWatchlist() {
       <div class="page-header">
         <div>
           <div class="page-title">Watchlist</div>
-          <div class="page-subtitle">${stocks.length} stock${stocks.length !== 1 ? 's' : ''} saved · hover a row to highlight its dot, click to analyze</div>
+          <div class="page-subtitle">${esc(activeList.name)} · ${stocksInList.length} stock${stocksInList.length !== 1 ? 's' : ''} · hover a row to highlight its dot, click to analyze</div>
         </div>
         <button class="btn btn-primary" onclick="navigate('lookup')">+ Add Stock</button>
       </div>
 
-      <div class="card">
-        <div class="card-title">Style Box Comparison</div>
-        ${renderStyleBox(plotStocks)}
-        <div class="form-hint" style="text-align:center;margin-top:4px;max-width:520px;margin-left:auto;margin-right:auto">
-          Each stock's position uses the scoring weights that were active when it was last refreshed — not your current settings. Refresh a row to re-score with the current weights.
+      ${listSelector}
+
+      <div class="watchlist-plots">
+        <div class="card">
+          <div class="card-title">Style Box — Individual Stocks</div>
+          ${renderStyleBox(plotStocks)}
+          <div class="form-hint" style="text-align:center;margin-top:4px">
+            Dot size scales with each stock's weight in the list.
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-title">Portfolio Aggregate</div>
+          ${renderStyleBox(aggPlot)}
+          ${aggSummary}
         </div>
       </div>
 
@@ -1044,6 +1417,7 @@ function renderWatchlist() {
             <thead><tr>
               ${sortTh('ticker', 'Ticker')}
               ${sortTh('name',   'Name')}
+              ${sortTh('weight', 'Weight', 'text-right')}
               ${sortTh('style',  'Style')}
               ${sortTh('size',   'Size')}
               ${sortTh('value',  'Value',  'text-right')}
@@ -1079,15 +1453,24 @@ function renderWatchlist() {
                       : `<span class="text-muted">${fmtDate(snap.fetchedAt)}</span>`)
                   : `<span class="text-muted">—</span>`;
                 const refreshLabel = snap ? 'Refresh' : 'Score';
+                const wStr = String(s.weight ?? 1);
+                const pctStr = pctOf(s.weight).toFixed(pctOf(s.weight) % 1 < 0.05 ? 0 : 1) + '%';
                 return `
                   <tr class="watchlist-row" data-ticker="${esc(s.ticker)}"
                       onmouseenter="highlightStyleBoxDot('${esc(s.ticker)}')"
                       onmouseleave="resetStyleBoxDots()"
-                      onclick="if(event.target.closest('button'))return; lookupTicker('${esc(s.ticker)}')">
+                      onclick="if(event.target.closest('button')||event.target.closest('input'))return; lookupTicker('${esc(s.ticker)}')">
                     <td class="font-mono" style="font-weight:600">
                       <span class="ticker-swatch" style="background:${color}"></span>${esc(s.ticker)}
                     </td>
                     <td>${esc(s.name || '—')}</td>
+                    <td class="text-right nowrap">
+                      <input class="weight-input font-mono" type="number" min="0" step="0.1"
+                        value="${esc(wStr)}"
+                        onclick="event.stopPropagation()"
+                        onchange="setStockWeight('${esc(activeList.id)}','${esc(s.ticker)}',this.value)">
+                      <span class="weight-pct">${esc(pctStr)}</span>
+                    </td>
                     <td>${styleHtml}</td>
                     <td>${sizeHtml}</td>
                     <td class="text-right">${numCell(snap?.valueScore)}</td>
@@ -1097,12 +1480,15 @@ function renderWatchlist() {
                     <td>${refreshedHtml}</td>
                     <td class="nowrap text-right">
                       <button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();refreshWatchlistStock('${esc(s.ticker)}')">${refreshLabel}</button>
-                      <button class="btn btn-ghost btn-sm" style="color:var(--danger)" onclick="event.stopPropagation();removeFromWatchlist('${esc(s.ticker)}')">Remove</button>
+                      <button class="btn btn-ghost btn-sm" style="color:var(--danger)" onclick="event.stopPropagation();removeFromActiveList('${esc(s.ticker)}')">Remove</button>
                     </td>
                   </tr>`;
               }).join('')}
             </tbody>
           </table>
+        </div>
+        <div class="form-hint" style="margin-top:8px">
+          Edit a weight to change its share of the portfolio aggregate and its dot size on the comparison plot. Weights are normalized — raw numbers can be anything (e.g. 1, 3, 0.5 or shares-held counts).
         </div>
       </div>
     </div>`;

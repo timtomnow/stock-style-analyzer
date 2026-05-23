@@ -1,6 +1,6 @@
 # Stock Style Analyzer — User Guide
 
-> Score stocks on Value and Growth dimensions using a 3×3 style box framework. Save multiple stocks to a watchlist and plot them side by side.
+> Score stocks on Value and Growth dimensions using a 3×3 style box framework. Organize stocks into multiple named watchlists, assign portfolio weights, and visualize the aggregate style of a built portfolio.
 
 ## How to Run
 
@@ -23,13 +23,14 @@ An internet connection is required — stock fundamentals are fetched from Yahoo
 
 ### Dashboard
 
-Quick overview of your watchlist. When you've saved stocks, the dashboard shows:
+Quick overview of every stock you've saved (across all watchlists). When you've saved stocks, the dashboard shows:
 
+- Stat cards: total **Stocks**, number of **Lists**, and how many have been **Scored**
 - A **mini style box** with the top 5 stocks by Net Score plotted as colored dots
 - A compact table of those 5 stocks with their style and net score
 - Hover any row to highlight the matching dot, or click to jump to its analysis
 
-When the watchlist is empty, the dashboard shows a short "how it works" guide instead.
+When no stocks are saved, the dashboard shows a short "how it works" guide instead.
 
 ---
 
@@ -47,7 +48,7 @@ You'll see:
 - **Factor Breakdown** — every value and growth factor with its raw number, weight, and 0–100 score
 - **Raw API Response** — collapsible debug view of the full Yahoo Finance payload
 
-Click **+ Add to Watchlist** to save the stock with a scoring snapshot (see Watchlist below).
+Click **+ Add to Watchlist** to choose which list(s) the stock belongs to. The popup shows every watchlist as a checkbox, lets you create new lists inline, and pre-checks the currently active list for brand-new tickers. The button changes to **In N lists ▾** for stocks already saved — click it any time to add or remove memberships.
 
 #### Historical periods
 
@@ -59,14 +60,35 @@ When you pick a historical quarter, valuation ratios (P/E, P/B, P/S, P/CF, Divid
 
 ### Watchlist
 
-A sortable table of every saved stock, with a multi-dot style box above it.
+The Watchlist page shows **one list at a time**. Use the dropdown at the top to switch between lists, or use the toolbar buttons to manage them:
 
-Columns: Ticker, Name, Style, Size, Value, Growth, Net, Period, Refreshed, Actions. Click any column header to sort. Default sort is Net descending.
+- **+ New** — create a new list (e.g. "Bank Stocks", "Dividend Stocks", "Tech Stocks")
+- **Rename** — rename the active list
+- **Delete** — remove the active list (blocked if it's your only one)
+
+A ticker can live in any number of lists — adding a stock to a second list doesn't create a copy. Removing a ticker from its last list garbage-collects its snapshot.
+
+#### Plots
+
+Two style boxes render side by side:
+
+1. **Individual Stocks** — one colored dot per ticker. **Dot size scales with the stock's portfolio weight** — heavier weights = bigger dots.
+2. **Portfolio Aggregate** — a single dot showing the weighted-average position of the whole list, plus a Value / Growth / Net / Style summary. Stocks with no score yet are skipped and the remaining weights are renormalized.
+
+#### Per-ticker weights
+
+Each list stores its own weight per ticker. The **Weight** column in the table is editable — type any non-negative number (e.g. `1`, `3`, `0.5`, or shares-held counts) and weights are normalized to 100% across the list when computing the aggregate and the dot sizes. The normalized percentage is shown next to each weight.
+
+By default every new ticker is added at weight `1`, giving equal-weight aggregation across the list. Set all weights equal to keep equal-weight; change them to model a built portfolio (e.g. 50% AAPL, 30% MSFT, 20% NVDA → `5`, `3`, `2`).
+
+#### Table
+
+Columns: Ticker, Name, Weight, Style, Size, Value, Growth, Net, Period, Refreshed, Actions. Click any column header to sort. Default sort is Net descending.
 
 - **Hover a row** to highlight that stock's dot in the box above
-- **Click a row** to jump to its Lookup page
-- **Refresh** re-fetches the ticker and updates the snapshot using your current scoring weights
-- **Remove** deletes it from the watchlist
+- **Click a row** (anywhere outside the weight input or action buttons) to jump to its Lookup page
+- **Refresh** re-fetches the ticker and updates its snapshot using your current scoring weights (the snapshot is shared across all lists that contain the ticker)
+- **Remove** drops the stock from the **active list only** — other lists keep it
 
 #### Stale snapshots
 
@@ -74,7 +96,7 @@ A small `stale` badge appears next to the Refreshed date when a snapshot is more
 
 #### How positions are computed
 
-Each stock's dot reflects the scoring weights that were active **when it was last refreshed**, not your current settings. Refresh a row to re-score it with the current weights. This is intentional — it lets you compare stocks scored under different lenses.
+Each individual stock's dot reflects the scoring weights that were active **when it was last refreshed**, not your current settings. Refresh a row to re-score it with the current weights. The aggregate uses whatever scores are in the snapshots — refresh everything for a fresh portfolio view.
 
 ---
 
