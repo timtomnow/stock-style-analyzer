@@ -152,6 +152,14 @@ function exportData() {
   showToast('Data exported');
 }
 
+function openTtnBackupRestore() {
+  if (window.TTNBackup && typeof window.TTNBackup.openImport === 'function') {
+    window.TTNBackup.openImport('stock-style-analyzer');
+  } else {
+    showToast('ttn-backup client not loaded yet — try again in a moment.', 'error');
+  }
+}
+
 function triggerImport() {
   const input = Object.assign(document.createElement('input'), {
     type: 'file', accept: '.json',
@@ -1664,11 +1672,12 @@ function renderSettings() {
 
       <div class="card mt-4">
         <div class="card-title">Data</div>
-        <div class="flex gap-2">
+        <div class="flex gap-2" style="flex-wrap:wrap">
           <button class="btn btn-secondary" onclick="exportData()">Export Watchlist (JSON)</button>
           <button class="btn btn-secondary" onclick="triggerImport()">Import Watchlist (JSON)</button>
+          <button class="btn btn-secondary" onclick="openTtnBackupRestore()">Restore from ttn-backup</button>
         </div>
-        <div class="form-hint mt-2">Export regularly as a backup. Importing replaces all current data.</div>
+        <div class="form-hint mt-2">Export regularly as a backup. Importing replaces all current data. ttn-backup is a separate utility that snapshots all your TTN apps into one bundle on a schedule — <a href="../ttn-backup/" style="color:var(--accent)">open ttn-backup →</a></div>
       </div>
 
       <div class="card mt-4">

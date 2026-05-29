@@ -35,5 +35,24 @@
       });
     }
   </script>
+  <!-- ttn-backup integration: see https://timtomnow.github.io/ttn-backup/ -->
+  <script>
+    window.TTNBackupAdapter = {
+      appId: 'stock-style-analyzer',
+      appName: 'Stock Style Analyzer',
+      version: 1,
+      exportData: () => state.data,
+      importData: (data) => {
+        if (!data || typeof data !== 'object') {
+          throw new Error('Bundle payload is not an object.');
+        }
+        state.data = migrateData(data);
+        saveData();
+        navigate('dashboard');
+        showToast('Data restored from ttn-backup', 'success');
+      },
+    };
+  </script>
+  <script src="../ttn-backup/client.js" defer></script>
 </body>
 </html>
